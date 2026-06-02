@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/osv-advisory-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/osv-advisory-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/osv-advisory-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^5.9.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun->=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/osv-advisory-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/osv-advisory-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/osv-advisory-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^5.9.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun->=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -107,7 +107,7 @@ A public instance is available at `https://osv-advisory.caseyjhand.com/mcp` — 
 ```json
 {
   "mcpServers": {
-    "osv-advisory": {
+    "osv-advisory-mcp-server": {
       "type": "streamable-http",
       "url": "https://osv-advisory.caseyjhand.com/mcp"
     }
@@ -122,7 +122,7 @@ Add the following to your MCP client configuration file. No API key is required 
 ```json
 {
   "mcpServers": {
-    "osv-advisory": {
+    "osv-advisory-mcp-server": {
       "type": "stdio",
       "command": "bunx",
       "args": ["@cyanheads/osv-advisory-mcp-server@latest"],
@@ -140,7 +140,7 @@ Or with npx (no Bun required):
 ```json
 {
   "mcpServers": {
-    "osv-advisory": {
+    "osv-advisory-mcp-server": {
       "type": "stdio",
       "command": "npx",
       "args": ["-y", "@cyanheads/osv-advisory-mcp-server@latest"],
@@ -158,7 +158,7 @@ Or with Docker:
 ```json
 {
   "mcpServers": {
-    "osv-advisory": {
+    "osv-advisory-mcp-server": {
       "type": "stdio",
       "command": "docker",
       "args": [
