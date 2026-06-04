@@ -1,7 +1,7 @@
 # Developer Protocol
 
 **Server:** osv-advisory-mcp-server
-**Version:** 0.1.3
+**Version:** 0.1.4
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.9.21`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
@@ -209,7 +209,7 @@ src/
       types.ts                          # Domain types (OsvVuln, OsvAffected, etc.)
   mcp-server/
     tools/definitions/
-      osv-query.tool.ts                 # osv_query — single package vulnerability lookup
+      osv-query-package.tool.ts         # osv_query_package — single package vulnerability lookup
       osv-query-batch.tool.ts           # osv_query_batch — batch dependency audit
       osv-get-vulnerability.tool.ts     # osv_get_vulnerability — full advisory record fetch
       osv-list-ecosystems.tool.ts       # osv_list_ecosystems — static ecosystem list

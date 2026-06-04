@@ -47,8 +47,8 @@ OSV.dev REST API v1. No authentication. JSON throughout.
 
 | Tool | Behavior |
 |:---|:---|
-| `osv_query` | **Primary.** Package name + ecosystem + version → all known vulns for that version: severity, affected ranges, aliases (CVE IDs), fix versions. The "is this vulnerable?" tool. |
-| `osv_query_batch` | Batch `osv_query` over an array of `{package, ecosystem, version}` tuples — one call covers a whole dependency tree. Per-package results. High value for SBOM / lockfile audits. |
+| `osv_query_package` | **Primary.** Package name + ecosystem + version → all known vulns for that version: severity, affected ranges, aliases (CVE IDs), fix versions. The "is this vulnerable?" tool. |
+| `osv_query_batch` | Batch `osv_query_package` over an array of `{package, ecosystem, version}` tuples — one call covers a whole dependency tree. Per-package results. High value for SBOM / lockfile audits. |
 | `osv_get_vulnerability` | Full record for an OSV ID (`GHSA-…`, `PYSEC-…`, `RUSTSEC-…`): affected packages/versions, severity, references, credits, database-specific fields, CVE aliases. |
 | `osv_list_ecosystems` | Enumerate supported ecosystems — discovery + validating ecosystem strings before querying. |
 

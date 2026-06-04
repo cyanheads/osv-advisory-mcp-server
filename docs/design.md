@@ -6,7 +6,7 @@
 
 | Name | Description | Key Inputs | Annotations | Errors |
 |:-----|:------------|:-----------|:------------|:-------|
-| `osv_query` | Query vulnerabilities for a single package version. Returns all known vulns: OSV IDs, CVE aliases, severity (CVSS string), affected ranges, fix versions, CWE IDs. The primary "is this package version vulnerable?" tool. | `name` (package name), `ecosystem` (exact string — use `osv_list_ecosystems` to validate), `version` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | `invalid_ecosystem` (InvalidParams) |
+| `osv_query_package` | Query vulnerabilities for a single package version. Returns all known vulns: OSV IDs, CVE aliases, severity (CVSS string), affected ranges, fix versions, CWE IDs. The primary "is this package version vulnerable?" tool. | `name` (package name), `ecosystem` (exact string — use `osv_list_ecosystems` to validate), `version` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | `invalid_ecosystem` (InvalidParams) |
 | `osv_query_batch` | Batch vulnerability query over an array of `{name, ecosystem, version}` tuples — one call covers a full dependency list. Per-package results with `vulnCount`, `vulnIds`, and `aliases` (CVE IDs) for each. The differentiator for SBOM/lockfile audits. | `packages` (array of `{name, ecosystem, version}`, max 1000) | `readOnlyHint: true`, `openWorldHint: false` | `invalid_ecosystem` (InvalidParams), `batch_too_large` (InvalidParams) |
 | `osv_get_vulnerability` | Fetch the full record for a single OSV ID (`GHSA-…`, `PYSEC-…`, `RUSTSEC-…`, `GO-…`, `CVE-…`). Returns: summary, details, aliases (CVE IDs), severity, affected packages/ranges, fix versions, CWE IDs, references, credits. | `id` (OSV vulnerability ID) | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | `vulnerability_not_found` (NotFound) |
 | `osv_list_ecosystems` | Return the list of supported ecosystem strings. Use before querying to validate the `ecosystem` parameter — ecosystem strings are case-sensitive exact matches. | none | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | — |
@@ -51,7 +51,7 @@ Primary audience: developers, DevSecOps engineers, and SREs maintaining dependen
 
 | Service | Wraps | Used By |
 |:--------|:------|:--------|
-| `OsvApiService` | OSV.dev REST API v1 (`/v1/query`, `/v1/querybatch`, `/v1/vulns/{id}`) | `osv_query`, `osv_query_batch`, `osv_get_vulnerability` |
+| `OsvApiService` | OSV.dev REST API v1 (`/v1/query`, `/v1/querybatch`, `/v1/vulns/{id}`) | `osv_query_package`, `osv_query_batch`, `osv_get_vulnerability` |
 
 Single service, single API. No shared auth state; every call is anonymous HTTP. The service handles fetch + parse + retry. No rate-limit queuing required (no published limit), but exponential backoff on 5xx.
 
@@ -73,7 +73,7 @@ Framework env vars (`MCP_TRANSPORT_TYPE`, `MCP_HTTP_PORT`, `STORAGE_PROVIDER_TYP
 
 1. Service setup: `OsvApiService` with `fetchWithTimeout`, retry on 5xx, error body parsing
 2. `osv_list_ecosystems` — static list, no API call; validates inputs for other tools
-3. `osv_query` — single package+version query, normalized output
+3. `osv_query_package` — single package+version query, normalized output
 4. `osv_get_vulnerability` — full record fetch by OSV ID
 5. `osv_query_batch` — batch query with partial-success output
 
@@ -117,7 +117,7 @@ OSV severity is an array of CVSS vector strings (`severity[].score`), not pre-co
 
 ### aliases field is the NVD bridge
 
-Every vuln output prominently surfaces `aliases` as a first-class field alongside the OSV ID. This is the primary composition point: an agent calls `osv_query` or `osv_query_batch`, gets `aliases: ["CVE-2020-28500"]`, and chains to `nvd_get_cve` on `nist-nvd-mcp-server` for CVSS scoring, EPSS, and CISA KEV status. The `format()` function renders aliases in bold at the top of each vuln entry so `content[]`-only clients see them without having to scan the full record.
+Every vuln output prominently surfaces `aliases` as a first-class field alongside the OSV ID. This is the primary composition point: an agent calls `osv_query_package` or `osv_query_batch`, gets `aliases: ["CVE-2020-28500"]`, and chains to `nvd_get_cve` on `nist-nvd-mcp-server` for CVSS scoring, EPSS, and CISA KEV status. The `format()` function renders aliases in bold at the top of each vuln entry so `content[]`-only clients see them without having to scan the full record.
 
 ---
 
@@ -203,7 +203,7 @@ Events:
 
 ## Tool Detail
 
-### `osv_query`
+### `osv_query_package`
 
 **Description:** Query known vulnerabilities for a single package version across any supported ecosystem. Returns all matching OSV advisories with severity (CVSS vectors), CVE aliases, affected version ranges, and first safe version. Use `osv_list_ecosystems` to validate the ecosystem string before querying — ecosystem strings are case-sensitive exact matches and an invalid value returns an error, not empty results.
 
@@ -332,7 +332,7 @@ Ecosystem validation is pre-flight: any invalid ecosystem in the `packages` arra
 
 ### `osv_get_vulnerability`
 
-**Description:** Fetch the full advisory record for an OSV vulnerability ID. Returns the complete record: summary, full details text, CVE aliases, all affected packages and version ranges, fix versions, CVSS severity vectors, CWE weakness IDs, and references. Use when `osv_query` or `osv_query_batch` returns a vuln ID and you need the full advisory context — eligibility criteria, scope of affected packages, or remediation guidance.
+**Description:** Fetch the full advisory record for an OSV vulnerability ID. Returns the complete record: summary, full details text, CVE aliases, all affected packages and version ranges, fix versions, CVSS severity vectors, CWE weakness IDs, and references. Use when `osv_query_package` or `osv_query_batch` returns a vuln ID and you need the full advisory context — eligibility criteria, scope of affected packages, or remediation guidance.
 
 **Input:**
 ```ts
@@ -417,4 +417,4 @@ z.object({
 - **No ecosystem listing via API.** `POST /v1/vulns` with an ecosystem filter does not exist (live-confirmed: returns `{ code: 404, message: "The current request is not defined by this API." }`). `osv_list_ecosystems` returns a static hardcoded list that may drift from the live supported set.
 - **Severity absent for some records.** Non-GHSA records (e.g., `PYSEC-`, `RUSTSEC-`) often lack `database_specific.severity` and may have no `severity` array. `severityLabel` will be null in those cases.
 - **No CVSS base score direct field.** CVSS scores are in vector string form only (`"CVSS:3.1/AV:N/AC:L/..."`) — the service layer must parse the base score for severity derivation.
-- **Pagination on `/v1/query`.** The single-package query supports `page_token` for packages with very large numbers of advisories. This is extremely rare in practice (no known real-world case) — the handler does not paginate and returns whatever the first page provides.
+- **Pagination on `/v1/query`.** The single-package query supports `page_token` for packages with very large numbers of advisories. This is extremely rare in practice (no known real-world case) — the `osv_query_package` handler does not paginate and returns whatever the first page provides.

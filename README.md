@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/osv-advisory-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/osv-advisory-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/osv-advisory-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^5.9.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun->=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.4-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/osv-advisory-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/osv-advisory-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/osv-advisory-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^5.9.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun->=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -33,12 +33,12 @@
 
 | Tool | Description |
 |:---|:---|
-| `osv_query` | Query known vulnerabilities for a single package version by name, ecosystem, and version |
+| `osv_query_package` | Query known vulnerabilities for a single package version by name, ecosystem, and version |
 | `osv_query_batch` | Batch vulnerability query for an array of package tuples — one call for a full dependency list or SBOM audit |
 | `osv_get_vulnerability` | Fetch the full advisory record for a single OSV vulnerability ID |
 | `osv_list_ecosystems` | Return the list of supported ecosystem identifier strings |
 
-### `osv_query`
+### `osv_query_package`
 
 The primary "is this package version vulnerable?" tool.
 
@@ -66,7 +66,7 @@ Fetch the complete advisory record by OSV ID.
 
 - Accepts any OSV ID prefix: `GHSA-` (GitHub), `PYSEC-` (Python), `RUSTSEC-` (Rust), `GO-` (Go), `DSA-`/`DLA-` (Debian), `CVE-` (direct CVE fallbacks)
 - Returns: summary, full advisory details text, all CVE aliases, all affected packages and their version ranges, fix versions, CVSS severity vectors, CWE weakness IDs, and references (ADVISORY, FIX, REPORT, etc.)
-- Use after `osv_query` or `osv_query_batch` returns a vuln ID and you need the full advisory context — remediation guidance, scope of affected packages, or eligibility criteria
+- Use after `osv_query_package` or `osv_query_batch` returns a vuln ID and you need the full advisory context — remediation guidance, scope of affected packages, or eligibility criteria
 
 ---
 
@@ -95,7 +95,7 @@ Agent-friendly output:
 
 - `aliases` (CVE IDs) prominently surfaced on every vuln entry — the primary composition point for chaining to `nist-nvd-mcp-server` for CVSS base scores, EPSS, and CISA KEV status
 - `severityLabel` derived from `database_specific.severity` (GHSA records) or the highest CVSS base score; `null` rather than fabricated when neither source is available
-- Echo of query parameters (`queryMeta`) on `osv_query` output so agents can verify the request was applied correctly
+- Echo of query parameters (`queryMeta`) on `osv_query_package` output so agents can verify the request was applied correctly
 - Batch aggregate summary (`worstSeverity`, `vulnerableCount`, `cleanCount`) for quick triage without reading per-package rows
 
 ## Getting started
@@ -267,7 +267,7 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 | Directory | Purpose |
 |:----------|:--------|
 | `src/index.ts` | `createApp()` entry point — registers tools and inits services. |
-| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — `osv_query`, `osv_query_batch`, `osv_get_vulnerability`, `osv_list_ecosystems`. |
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — `osv_query_package`, `osv_query_batch`, `osv_get_vulnerability`, `osv_list_ecosystems`. |
 | `src/services/osv-api` | OSV.dev REST API service — fetch, retry, response normalization. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 

@@ -131,7 +131,7 @@ osv-advisory-mcp-server/
 │   │           ├── osv-get-vulnerability.tool.ts
 │   │           ├── osv-list-ecosystems.tool.ts
 │   │           ├── osv-query-batch.tool.ts
-│   │           └── osv-query.tool.ts
+│   │           └── osv-query-package.tool.ts
 │   ├── services/
 │   │   └── osv-api/
 │   │       ├── osv-api-service.ts
@@ -146,7 +146,7 @@ osv-advisory-mcp-server/
 │       ├── osv-get-vulnerability.tool.test.ts
 │       ├── osv-list-ecosystems.tool.test.ts
 │       ├── osv-query-batch.tool.test.ts
-│       └── osv-query.tool.test.ts
+│       └── osv-query-package.tool.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
