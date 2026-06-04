@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.4](changelog/0.1.x/0.1.4.md) — 2026-06-04 · ⚠️ Breaking
+
+BREAKING: rename osv_query → osv_query_package; callers must update tool name
+
 ## [0.1.3](changelog/0.1.x/0.1.3.md) — 2026-06-02
 
 Adopt @cyanheads/mcp-ts-core 0.9.21 — HTTP log context fix, secret-stripping, and retry improvements
