@@ -1,6 +1,6 @@
 /**
  * @fileoverview Tool for querying vulnerabilities for a single package version via OSV.dev.
- * @module mcp-server/tools/definitions/osv-query
+ * @module mcp-server/tools/definitions/osv-query-package
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
@@ -65,7 +65,7 @@ const VulnOutputSchema = z.object({
   modified: z.string().describe('ISO 8601 timestamp of last modification.'),
 });
 
-export const osvQuery = tool('osv_query', {
+export const osvQueryPackage = tool('osv_query_package', {
   description:
     'Query known vulnerabilities for a single package version across any supported ecosystem. ' +
     'Returns all matching OSV advisories with severity (CVSS vectors), CVE aliases, affected version ranges, ' +

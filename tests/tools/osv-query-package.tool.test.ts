@@ -1,11 +1,11 @@
 /**
- * @fileoverview Tests for osv_query tool.
- * @module tests/tools/osv-query.tool.test
+ * @fileoverview Tests for osv_query_package tool.
+ * @module tests/tools/osv-query-package.tool.test
  */
 
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { osvQuery } from '@/mcp-server/tools/definitions/osv-query.tool.js';
+import { osvQueryPackage } from '@/mcp-server/tools/definitions/osv-query-package.tool.js';
 import type { OsvVulnerability } from '@/services/osv-api/osv-api-service.js';
 import * as osvApiModule from '@/services/osv-api/osv-api-service.js';
 
@@ -64,7 +64,7 @@ const SPARSE_VULN: OsvVulnerability = {
   fixedVersions: [],
 };
 
-describe('osvQuery', () => {
+describe('osvQueryPackage', () => {
   const mockService = { queryPackage: vi.fn() };
 
   beforeEach(() => {
@@ -76,9 +76,13 @@ describe('osvQuery', () => {
 
   it('returns vulnerabilities for a known vulnerable package', async () => {
     mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [SAMPLE_VULN] });
-    const ctx = createMockContext({ errors: osvQuery.errors });
-    const input = osvQuery.input.parse({ name: 'lodash', ecosystem: 'npm', version: '4.17.1' });
-    const result = await osvQuery.handler(input, ctx);
+    const ctx = createMockContext({ errors: osvQueryPackage.errors });
+    const input = osvQueryPackage.input.parse({
+      name: 'lodash',
+      ecosystem: 'npm',
+      version: '4.17.1',
+    });
+    const result = await osvQueryPackage.handler(input, ctx);
 
     expect(result.vulns).toHaveLength(1);
     expect(result.vulns[0]!.id).toBe('GHSA-29mw-wpgm-hmr9');
@@ -91,9 +95,13 @@ describe('osvQuery', () => {
 
   it('returns empty vulns array for a clean package', async () => {
     mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [] });
-    const ctx = createMockContext({ errors: osvQuery.errors });
-    const input = osvQuery.input.parse({ name: 'lodash', ecosystem: 'npm', version: '4.17.21' });
-    const result = await osvQuery.handler(input, ctx);
+    const ctx = createMockContext({ errors: osvQueryPackage.errors });
+    const input = osvQueryPackage.input.parse({
+      name: 'lodash',
+      ecosystem: 'npm',
+      version: '4.17.21',
+    });
+    const result = await osvQueryPackage.handler(input, ctx);
 
     expect(result.vulns).toHaveLength(0);
     expect(result.queryMeta.vulnCount).toBe(0);
@@ -101,18 +109,26 @@ describe('osvQuery', () => {
 
   it('throws invalid_ecosystem via ctx.fail when API returns invalid', async () => {
     mockService.queryPackage.mockResolvedValue({ invalid: true, message: 'Invalid ecosystem.' });
-    const ctx = createMockContext({ errors: osvQuery.errors });
-    const input = osvQuery.input.parse({ name: 'lodash', ecosystem: 'NPM', version: '4.17.1' });
-    await expect(osvQuery.handler(input, ctx)).rejects.toMatchObject({
+    const ctx = createMockContext({ errors: osvQueryPackage.errors });
+    const input = osvQueryPackage.input.parse({
+      name: 'lodash',
+      ecosystem: 'NPM',
+      version: '4.17.1',
+    });
+    await expect(osvQueryPackage.handler(input, ctx)).rejects.toMatchObject({
       data: { reason: 'invalid_ecosystem' },
     });
   });
 
   it('handles sparse upstream vuln with null severity and empty aliases', async () => {
     mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [SPARSE_VULN] });
-    const ctx = createMockContext({ errors: osvQuery.errors });
-    const input = osvQuery.input.parse({ name: 'requests', ecosystem: 'PyPI', version: '2.28.0' });
-    const result = await osvQuery.handler(input, ctx);
+    const ctx = createMockContext({ errors: osvQueryPackage.errors });
+    const input = osvQueryPackage.input.parse({
+      name: 'requests',
+      ecosystem: 'PyPI',
+      version: '2.28.0',
+    });
+    const result = await osvQueryPackage.handler(input, ctx);
 
     expect(result.vulns[0]!.severityLabel).toBeNull();
     expect(result.vulns[0]!.aliases).toHaveLength(0);
@@ -137,7 +153,7 @@ describe('osvQuery', () => {
       ],
       queryMeta: { package: 'lodash', ecosystem: 'npm', version: '4.17.1', vulnCount: 1 },
     };
-    const blocks = osvQuery.format!(output);
+    const blocks = osvQueryPackage.format!(output);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('GHSA-29mw-wpgm-hmr9');
     expect(text).toContain('CVE-2020-28500');
@@ -151,7 +167,7 @@ describe('osvQuery', () => {
       vulns: [],
       queryMeta: { package: 'lodash', ecosystem: 'npm', version: '4.17.21', vulnCount: 0 },
     };
-    const blocks = osvQuery.format!(output);
+    const blocks = osvQueryPackage.format!(output);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('No known vulnerabilities');
   });
@@ -159,13 +175,13 @@ describe('osvQuery', () => {
   it('handles empty {} API response (no vulns key) as zero vulnerabilities', async () => {
     // OSV returns {} (not {vulns:[]}) when no results — service normalizes this to []
     mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [] });
-    const ctx = createMockContext({ errors: osvQuery.errors });
-    const input = osvQuery.input.parse({
+    const ctx = createMockContext({ errors: osvQueryPackage.errors });
+    const input = osvQueryPackage.input.parse({
       name: 'not-a-real-package',
       ecosystem: 'npm',
       version: '99.99.99',
     });
-    const result = await osvQuery.handler(input, ctx);
+    const result = await osvQueryPackage.handler(input, ctx);
 
     expect(result.vulns).toHaveLength(0);
     expect(result.queryMeta.vulnCount).toBe(0);
@@ -199,13 +215,13 @@ describe('osvQuery', () => {
     };
 
     mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [unfixedVuln] });
-    const ctx = createMockContext({ errors: osvQuery.errors });
-    const input = osvQuery.input.parse({
+    const ctx = createMockContext({ errors: osvQueryPackage.errors });
+    const input = osvQueryPackage.input.parse({
       name: 'unsafe-lib',
       ecosystem: 'crates.io',
       version: '1.2.0',
     });
-    const result = await osvQuery.handler(input, ctx);
+    const result = await osvQueryPackage.handler(input, ctx);
 
     expect(result.vulns[0]!.fixedVersions).toHaveLength(0);
     const range = result.vulns[0]!.affectedRanges[0]!;
@@ -239,7 +255,7 @@ describe('osvQuery', () => {
       ],
       queryMeta: { package: 'unsafe-lib', ecosystem: 'crates.io', version: '1.2.0', vulnCount: 1 },
     };
-    const blocks = osvQuery.format!(output);
+    const blocks = osvQueryPackage.format!(output);
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('No fix available');
     expect(text).toContain('last_affected: 1.2.3');
