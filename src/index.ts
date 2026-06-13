@@ -15,6 +15,8 @@ import {
 import { initOsvApiService } from './services/osv-api/osv-api-service.js';
 
 await createApp({
+  name: 'osv-advisory-mcp-server',
+  title: 'osv-advisory-mcp-server',
   tools: [osvListEcosystems, osvQueryPackage, osvGetVulnerability, osvQueryBatch],
   resources: [],
   prompts: [],
