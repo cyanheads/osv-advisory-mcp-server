@@ -37,10 +37,12 @@ WORKDIR /usr/src/app
 ENV NODE_ENV=production
 
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
+ARG APP_VERSION
 LABEL org.opencontainers.image.title="osv-advisory-mcp-server"
 LABEL org.opencontainers.image.description="Query OSV.dev for package vulnerabilities, batch-audit dependency lists, and fetch full advisory records via MCP."
 LABEL org.opencontainers.image.source="https://github.com/cyanheads/osv-advisory-mcp-server"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.version="${APP_VERSION}"
 
 # Copy dependency manifests
 COPY package.json bun.lock ./
@@ -94,6 +96,10 @@ ENV MCP_FORCE_CONSOLE_LOGGING="true"
 
 # Expose the port the server listens on
 EXPOSE ${MCP_HTTP_PORT}
+
+# Health check — probes /healthz every 30s; no curl/wget dependency
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD bun -e "fetch('http://localhost:'+process.env.MCP_HTTP_PORT+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # The command to start the server
 CMD ["bun", "run", "dist/index.js"]
