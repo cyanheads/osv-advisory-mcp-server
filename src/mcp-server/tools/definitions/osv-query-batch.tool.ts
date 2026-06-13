@@ -123,15 +123,8 @@ export const osvQueryBatch = tool('osv_query_batch', {
 
   errors: [
     {
-      reason: 'batch_too_large',
-      code: JsonRpcErrorCode.InvalidParams,
-      when: 'packages array exceeds 1000 entries.',
-      recovery:
-        'Split the package list into chunks of 1000 or fewer and call osv_query_batch multiple times.',
-    },
-    {
       reason: 'invalid_ecosystem',
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.ValidationError,
       when: 'One or more packages in the batch have an ecosystem string not recognized by OSV. Validation occurs before any package is queried.',
       recovery:
         'Call osv_list_ecosystems to see valid ecosystem strings. Correct all ecosystem values and retry.',

@@ -114,7 +114,7 @@ export const osvQueryPackage = tool('osv_query_package', {
   errors: [
     {
       reason: 'invalid_ecosystem',
-      code: JsonRpcErrorCode.InvalidParams,
+      code: JsonRpcErrorCode.ValidationError,
       when: 'The ecosystem string is not recognized by OSV. Ecosystem names are case-sensitive exact matches.',
       recovery:
         'Call osv_list_ecosystems to see valid ecosystem strings, then retry with the correct value.',
