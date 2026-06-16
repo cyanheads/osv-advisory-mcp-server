@@ -1,5 +1,5 @@
 {
-  "name": "@cyanheads/osv-advisory-mcp-server",
+  "name": "osv-advisory-mcp-server",
   "version": "0.1.5",
   "description": "Query OSV.dev for package vulnerabilities, batch-audit dependency lists, and fetch full advisory records via MCP. STDIO or Streamable HTTP.",
   "author": {
@@ -13,7 +13,7 @@
   "keywords": ["mcp", "mcp-server", "model-context-protocol", "osv", "vulnerability", "security", "sbom"],
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
-    "displayName": "@cyanheads/osv-advisory-mcp-server",
+    "displayName": "osv-advisory-mcp-server",
     "shortDescription": "Query OSV.dev for package vulnerabilities, batch-audit dependency lists, and fetch full advisory records via MCP. STDIO or Streamable HTTP.",
     "longDescription": "",
     "developerName": "Casey Hand",

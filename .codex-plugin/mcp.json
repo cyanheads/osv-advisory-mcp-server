@@ -1,5 +1,5 @@
 {
-  "@cyanheads/osv-advisory-mcp-server": {
+  "osv-advisory-mcp-server": {
     "command": "npx",
     "args": ["-y", "@cyanheads/osv-advisory-mcp-server"],
     "env": {
