@@ -1,6 +1,6 @@
 # osv-advisory-mcp-server - Directory Structure
 
-Generated on: 2026-06-13 03:32:27
+Generated on: 2026-06-20 17:51:01
 
 ```text
 osv-advisory-mcp-server/
@@ -27,6 +27,7 @@ osv-advisory-mcp-server/
 ├── scripts/
 │   ├── build-changelog.ts
 │   ├── build.ts
+│   ├── check-dependency-specifiers.ts
 │   ├── check-docs-sync.ts
 │   ├── check-framework-antipatterns.ts
 │   ├── check-skill-versions.ts
