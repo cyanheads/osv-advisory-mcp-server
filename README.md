@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.6-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/osv-advisory-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/osv-advisory-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/osv-advisory-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun->=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.7-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/osv-advisory-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/osv-advisory-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/osv-advisory-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun->=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -54,7 +54,7 @@ The primary "is this package version vulnerable?" tool.
 The primary tool for dependency audits, SBOM scanning, and lockfile triage.
 
 - Accepts an array of `{name, ecosystem, version}` tuples (1–1000 packages per call)
-- All ecosystems are pre-validated before the API call — a single invalid ecosystem string fails the batch (OSV API behavior)
+- Ecosystem strings are validated by OSV.dev itself, not a static allowlist — an unrecognized ecosystem surfaces as that entry's per-package `error` rather than failing the whole batch
 - Returns per-package results positionally matching the input, with `vulnerable`, `vulnCount`, `vulns` (including `aliases` and `severityLabel`), and `fixedVersions`
 - Includes aggregate summary: `totalPackages`, `vulnerableCount`, `cleanCount`, `errorCount`, `totalVulns`, `worstSeverity`
 
@@ -89,7 +89,7 @@ OSV-specific:
 
 - No API key required — OSV.dev is fully public, keyless, and has no published rate limit
 - Parallel single-package queries in `osv_query_batch` return full records including `aliases` (CVE IDs) that the upstream batch endpoint omits
-- Ecosystem pre-validation guards against OSV's all-or-nothing batch rejection behavior
+- Per-package queries isolate failures — one invalid ecosystem or upstream error surfaces as that row's `error`, leaving the rest of the batch intact
 
 Agent-friendly output:
 

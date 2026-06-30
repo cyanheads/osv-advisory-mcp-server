@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.7](changelog/0.1.x/0.1.7.md) — 2026-06-30
+
+osv_query_batch no longer rejects valid OSV ecosystems (static preflight removed); declared recovery hints now reach tool errors; content[] renders clean packages and all advisory references; stale osv_query tool-text references corrected
+
 ## [0.1.6](changelog/0.1.x/0.1.6.md) — 2026-06-20
 
 Adopt mcp-ts-core ^0.10.9; vendored devcheck scripts gain the dependency-specifier guard and plugin-manifest packaging checks; codex-plugin longDescription filled

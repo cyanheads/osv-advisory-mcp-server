@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/osv-advisory-mcp-server",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Query OSV.dev for package vulnerabilities, batch-audit dependency lists, and fetch full advisory records via MCP. STDIO or Streamable HTTP.",
   "mcpName": "io.github.cyanheads/osv-advisory-mcp-server",
   "type": "module",
@@ -86,8 +86,8 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.0",
-    "@types/node": "^26.0.0",
+    "@biomejs/biome": "^2.5.1",
+    "@types/node": "^26.0.1",
     "depcheck": "^1.4.7",
     "ignore": "^7.0.5",
     "tsc-alias": "^1.8.17",
