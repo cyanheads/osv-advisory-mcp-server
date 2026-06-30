@@ -49,7 +49,7 @@ describe('osvQueryBatch', () => {
       makeResult('express', 'npm', '4.18.0'),
     ]);
 
-    const ctx = createMockContext({ errors: osvQueryBatch.errors });
+    const ctx = createMockContext();
     const input = osvQueryBatch.input.parse({
       packages: [
         { name: 'lodash', ecosystem: 'npm', version: '4.17.1' },
@@ -71,18 +71,44 @@ describe('osvQueryBatch', () => {
     expect(result.summary.worstSeverity).toBe('MODERATE');
   });
 
-  it('throws invalid_ecosystem for unrecognized ecosystem strings', async () => {
-    const ctx = createMockContext({ errors: osvQueryBatch.errors });
+  it('accepts an ecosystem absent from the old static allowlist and passes it through', async () => {
+    // Ubuntu:22.04:LTS is a valid OSV ecosystem the removed static allowlist rejected.
+    // With the preflight gone, OSV is the authority: the package reaches the service.
+    mockService.queryBatch.mockResolvedValue([makeResult('curl', 'Ubuntu:22.04:LTS', '7.68.0')]);
+    const ctx = createMockContext();
+    const input = osvQueryBatch.input.parse({
+      packages: [{ name: 'curl', ecosystem: 'Ubuntu:22.04:LTS', version: '7.68.0' }],
+    });
+    const result = await osvQueryBatch.handler(input, ctx);
+
+    expect(mockService.queryBatch).toHaveBeenCalledTimes(1);
+    expect(mockService.queryBatch.mock.calls[0]![0]).toEqual([
+      { name: 'curl', ecosystem: 'Ubuntu:22.04:LTS', version: '7.68.0' },
+    ]);
+    expect(result.results[0]!.error).toBeNull();
+    expect(result.results[0]!.vulnerable).toBe(false);
+    expect(result.summary.errorCount).toBe(0);
+  });
+
+  it('surfaces a genuinely-invalid ecosystem as a per-row error, not a thrown error', async () => {
+    // No preflight: OSV's per-package rejection (service maps HTTP 400 to a message) comes
+    // back inline, so one bad ecosystem degrades to results[i].error without failing the call.
+    mockService.queryBatch.mockResolvedValue([
+      makeResult('lodash', 'npm', '4.17.1'),
+      makeResult('pkg', 'totally-not-an-ecosystem', '1.0.0', [], 'Invalid ecosystem.'),
+    ]);
+    const ctx = createMockContext();
     const input = osvQueryBatch.input.parse({
       packages: [
-        { name: 'lodash', ecosystem: 'NPM', version: '4.17.1' }, // NPM != npm
+        { name: 'lodash', ecosystem: 'npm', version: '4.17.1' },
+        { name: 'pkg', ecosystem: 'totally-not-an-ecosystem', version: '1.0.0' },
       ],
     });
-    await expect(osvQueryBatch.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'invalid_ecosystem' },
-    });
-    // Service should NOT have been called
-    expect(mockService.queryBatch).not.toHaveBeenCalled();
+    const result = await osvQueryBatch.handler(input, ctx);
+
+    expect(result.results[1]!.error).toBe('Invalid ecosystem.');
+    expect(result.results[1]!.vulnerable).toBe(false);
+    expect(result.summary.errorCount).toBe(1);
   });
 
   it('handles per-package errors without aborting the batch', async () => {
@@ -91,7 +117,7 @@ describe('osvQueryBatch', () => {
       makeResult('express', 'npm', '4.18.0'),
     ]);
 
-    const ctx = createMockContext({ errors: osvQueryBatch.errors });
+    const ctx = createMockContext();
     const input = osvQueryBatch.input.parse({
       packages: [
         { name: 'lodash', ecosystem: 'npm', version: '4.17.1' },
@@ -113,7 +139,7 @@ describe('osvQueryBatch', () => {
       ]),
     ]);
 
-    const ctx = createMockContext({ errors: osvQueryBatch.errors });
+    const ctx = createMockContext();
     const input = osvQueryBatch.input.parse({
       packages: [{ name: 'pkg', ecosystem: 'npm', version: '1.0.0' }],
     });
@@ -138,7 +164,7 @@ describe('osvQueryBatch', () => {
       makeResult('requests', 'PyPI', '2.28.0', [], 'Invalid ecosystem.'), // per-package error
     ]);
 
-    const ctx = createMockContext({ errors: osvQueryBatch.errors });
+    const ctx = createMockContext();
     const input = osvQueryBatch.input.parse({
       packages: [
         { name: 'lodash', ecosystem: 'npm', version: '4.17.1' },
@@ -188,7 +214,7 @@ describe('osvQueryBatch', () => {
       makeResult('express', 'npm', '4.18.0'), // no aliases expected
     ]);
 
-    const ctx = createMockContext({ errors: osvQueryBatch.errors });
+    const ctx = createMockContext();
     const input = osvQueryBatch.input.parse({
       packages: [
         { name: 'lodash', ecosystem: 'npm', version: '4.17.1' },
@@ -271,5 +297,34 @@ describe('osvQueryBatch', () => {
     expect(text).toContain('CVE-2020-28500');
     expect(text).toContain('4.17.21');
     expect(text).toContain('GHSA-29mw-wpgm-hmr9');
+  });
+
+  it('renders clean packages in content[] (parity with structuredContent)', () => {
+    const output = {
+      results: [
+        {
+          name: 'express',
+          ecosystem: 'npm',
+          version: '4.18.0',
+          vulnerable: false,
+          error: null,
+          vulnCount: 0,
+          vulns: [],
+        },
+      ],
+      summary: {
+        totalPackages: 1,
+        vulnerableCount: 0,
+        cleanCount: 1,
+        errorCount: 0,
+        totalVulns: 0,
+        worstSeverity: null,
+      },
+    };
+    const blocks = osvQueryBatch.format!(output);
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('express');
+    expect(text).toContain('4.18.0');
+    expect(text).toContain('Clean Packages');
   });
 });

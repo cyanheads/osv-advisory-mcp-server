@@ -394,22 +394,6 @@ export class OsvApiService {
       };
     });
   }
-
-  /**
-   * Test whether a single ecosystem string is valid by probing the OSV API.
-   * Returns true when valid, false on HTTP 400 with code 3.
-   * Throws on network errors.
-   */
-  async probeEcosystem(ecosystem: string, ctx: Context): Promise<boolean> {
-    const { status } = await postJson<RawOsvQueryResponse>(
-      '/v1/query',
-      { package: { name: '__probe__', ecosystem }, version: '0.0.0' },
-      this.timeoutMs,
-      ctx,
-    );
-    // 400 = invalid ecosystem; 200 = valid (result will be empty, which is fine)
-    return status !== 400;
-  }
 }
 
 // ---------------------------------------------------------------------------

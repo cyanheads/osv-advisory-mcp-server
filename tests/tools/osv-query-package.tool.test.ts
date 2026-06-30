@@ -107,7 +107,7 @@ describe('osvQueryPackage', () => {
     expect(result.queryMeta.vulnCount).toBe(0);
   });
 
-  it('throws invalid_ecosystem via ctx.fail when API returns invalid', async () => {
+  it('throws invalid_ecosystem via ctx.fail with the contract recovery hint on the wire', async () => {
     mockService.queryPackage.mockResolvedValue({ invalid: true, message: 'Invalid ecosystem.' });
     const ctx = createMockContext({ errors: osvQueryPackage.errors });
     const input = osvQueryPackage.input.parse({
@@ -115,8 +115,12 @@ describe('osvQueryPackage', () => {
       ecosystem: 'NPM',
       version: '4.17.1',
     });
+    // data.reason + data.recovery.hint must reach the wire (hint is mirrored into content[]).
     await expect(osvQueryPackage.handler(input, ctx)).rejects.toMatchObject({
-      data: { reason: 'invalid_ecosystem' },
+      data: {
+        reason: 'invalid_ecosystem',
+        recovery: { hint: osvQueryPackage.errors![0]!.recovery },
+      },
     });
   });
 

@@ -5,9 +5,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getOsvApiService } from '@/services/osv-api/osv-api-service.js';
-import { SUPPORTED_ECOSYSTEMS } from './osv-list-ecosystems.tool.js';
 
 /** Severity ordering for worstSeverity derivation. */
 const SEVERITY_RANK: Record<string, number> = {
@@ -80,8 +78,7 @@ export const osvQueryBatch = tool('osv_query_batch', {
     'Query vulnerabilities for multiple packages in one call — the primary tool for dependency audits, ' +
     'SBOM scanning, and lockfile triage. Pass an array of {name, ecosystem, version} tuples (up to 1000). ' +
     'Each entry in the response corresponds positionally to the input. ' +
-    'Each finding includes CVE aliases for chaining to nist-nvd-mcp-server for CVSS scoring. ' +
-    'Invalid ecosystem strings are rejected before querying — call osv_list_ecosystems to validate.',
+    'Each finding includes CVE aliases for chaining to nist-nvd-mcp-server for CVSS scoring.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
 
   input: z.object({
@@ -121,31 +118,7 @@ export const osvQueryBatch = tool('osv_query_batch', {
       .describe('Aggregate statistics across the full batch.'),
   }),
 
-  errors: [
-    {
-      reason: 'invalid_ecosystem',
-      code: JsonRpcErrorCode.ValidationError,
-      when: 'One or more packages in the batch have an ecosystem string not recognized by OSV. Validation occurs before any package is queried.',
-      recovery:
-        'Call osv_list_ecosystems to see valid ecosystem strings. Correct all ecosystem values and retry.',
-    },
-  ],
-
   async handler(input, ctx) {
-    // Pre-flight ecosystem validation using the static list
-    const ecosystemSet = new Set(SUPPORTED_ECOSYSTEMS);
-    const invalidEcosystems = input.packages
-      .map((p) => p.ecosystem)
-      .filter((e) => !ecosystemSet.has(e));
-    if (invalidEcosystems.length > 0) {
-      const unique = [...new Set(invalidEcosystems)];
-      throw ctx.fail(
-        'invalid_ecosystem',
-        `Invalid ecosystem string(s): ${unique.map((e) => `"${e}"`).join(', ')}. ` +
-          'Ecosystem strings are case-sensitive exact matches. Call osv_list_ecosystems for valid values.',
-      );
-    }
-
     ctx.log.info('OSV batch query', { packageCount: input.packages.length });
 
     const service = getOsvApiService();
@@ -219,6 +192,14 @@ export const osvQueryBatch = tool('osv_query_batch', {
           lines.push(`- \`${vuln.id}\`${sev}${aliases}: ${vuln.summary}${fix}`);
         }
         lines.push('');
+      }
+    }
+
+    const clean = result.results.filter((r) => !r.vulnerable && r.error === null);
+    if (clean.length > 0) {
+      lines.push(`\n## Clean Packages\n`);
+      for (const pkg of clean) {
+        lines.push(`- \`${pkg.name}\` @ \`${pkg.version}\` (${pkg.ecosystem}) — clean`);
       }
     }
 

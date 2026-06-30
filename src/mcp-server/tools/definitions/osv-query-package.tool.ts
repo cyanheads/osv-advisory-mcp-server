@@ -134,6 +134,7 @@ export const osvQueryPackage = tool('osv_query_package', {
       throw ctx.fail(
         'invalid_ecosystem',
         `Ecosystem "${input.ecosystem}" is not recognized by OSV. ${result.message}`,
+        { ...ctx.recoveryFor('invalid_ecosystem') },
       );
     }
 

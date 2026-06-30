@@ -97,7 +97,7 @@ Each step is independently testable. Steps 3 and 4 can be developed in parallel 
 
 The `POST /v1/querybatch` response contains abbreviated vuln entries (`{ id, modified }`) for each found vulnerability, not full records. This is intentional API design: the batch endpoint is for "does any vuln exist for this package?" triage, not "give me the full advisory text for every vuln in my dependency tree."
 
-`osv_query_batch` output therefore surfaces: `vulnCount`, abbreviated `vulnIds`, and critically, `aliases` extracted from the full `osv_query` response (since querybatch only gives IDs, the `aliases` field is NOT available in batch results). This is a key design tension:
+`osv_query_batch` output therefore surfaces: `vulnCount`, abbreviated `vulnIds`, and critically, `aliases` extracted from the full `osv_query_package` response (since querybatch only gives IDs, the `aliases` field is NOT available in batch results). This is a key design tension:
 
 **Resolution:** `osv_query_batch` calls `POST /v1/querybatch` for the ID list, then for packages with ≤ N vulns (configurable, default: packages with any findings), it fetches full records via individual `GET /v1/vulns/{id}` calls (or `POST /v1/query` per-package) to surface `aliases`. For large batches where this would be too many follow-up calls, the tool surfaces `vulnIds` only and notes that `osv_get_vulnerability` should be called for CVE aliases on specific findings.
 
@@ -382,7 +382,7 @@ errors: [
     reason: 'vulnerability_not_found',
     code: JsonRpcErrorCode.NotFound,
     when: 'OSV returns HTTP 404 with code 5. The ID does not exist in the OSV database.',
-    recovery: 'Verify the OSV ID from osv_query or osv_query_batch results. CVE IDs like "CVE-2020-28500" may be resolvable as an alias — check the nist-nvd-mcp-server instead.',
+    recovery: 'Verify the OSV ID from osv_query_package or osv_query_batch results. CVE IDs like "CVE-2020-28500" may be resolvable as an alias — check the nist-nvd-mcp-server instead.',
   },
 ]
 ```

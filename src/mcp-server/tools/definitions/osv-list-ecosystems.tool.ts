@@ -41,7 +41,7 @@ export const SUPPORTED_ECOSYSTEMS: readonly string[] = [
 
 export const osvListEcosystems = tool('osv_list_ecosystems', {
   description:
-    'Return the list of supported ecosystem identifier strings for use with osv_query and osv_query_batch. ' +
+    'Return the list of supported ecosystem identifier strings for use with osv_query_package and osv_query_batch. ' +
     'Ecosystem strings are case-sensitive exact matches — passing "pypi" instead of "PyPI" returns an error from the API. ' +
     'Use this tool to discover valid ecosystem strings before querying, or to verify an ecosystem identifier ' +
     'from a lockfile format. The list is static (maintained from the OSV schema spec) and may occasionally ' +
@@ -54,7 +54,7 @@ export const osvListEcosystems = tool('osv_list_ecosystems', {
     ecosystems: z
       .array(z.string().describe('A supported ecosystem identifier string.'))
       .describe(
-        'Supported ecosystem identifier strings. These are case-sensitive exact matches required by the ecosystem parameter of osv_query and osv_query_batch.',
+        'Supported ecosystem identifier strings. These are case-sensitive exact matches required by the ecosystem parameter of osv_query_package and osv_query_batch.',
       ),
     note: z.string().describe('Advisory note about list currency and canonical source.'),
   }),
