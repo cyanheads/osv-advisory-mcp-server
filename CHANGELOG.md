@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.9](changelog/0.1.x/0.1.9.md) — 2026-06-30
+
+server.json advertises OSV_BATCH_CONCURRENCY (default 10) in both packages' environmentVariables, matching OSV_REQUEST_TIMEOUT_MS — MCP Registry discovery parity for the batch-concurrency knob added in 0.1.8
+
 ## [0.1.8](changelog/0.1.x/0.1.8.md) — 2026-06-30
 
 osv_query_batch drains per-package queries through a bounded worker pool (default 10, configurable via OSV_BATCH_CONCURRENCY) instead of up to 1000 concurrent requests; OSV_REQUEST_TIMEOUT_MS and the new cap are validated at startup; adopts @cyanheads/mcp-ts-core ^0.10.10

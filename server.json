@@ -6,7 +6,7 @@
     "url": "https://github.com/cyanheads/osv-advisory-mcp-server",
     "source": "github"
   },
-  "version": "0.1.8",
+  "version": "0.1.9",
   "remotes": [
     {
       "type": "streamable-http",
@@ -19,7 +19,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/osv-advisory-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.1.8",
+      "version": "0.1.9",
       "packageArguments": [
         {
           "type": "positional",
@@ -39,6 +39,13 @@
           "default": "10000"
         },
         {
+          "name": "OSV_BATCH_CONCURRENCY",
+          "description": "Maximum number of concurrent OSV.dev requests issued by osv_query_batch.",
+          "format": "string",
+          "isRequired": false,
+          "default": "10"
+        },
+        {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
           "format": "string",
@@ -55,7 +62,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/osv-advisory-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.1.8",
+      "version": "0.1.9",
       "packageArguments": [
         {
           "type": "positional",
@@ -73,6 +80,13 @@
           "format": "string",
           "isRequired": false,
           "default": "10000"
+        },
+        {
+          "name": "OSV_BATCH_CONCURRENCY",
+          "description": "Maximum number of concurrent OSV.dev requests issued by osv_query_batch.",
+          "format": "string",
+          "isRequired": false,
+          "default": "10"
         },
         {
           "name": "MCP_HTTP_HOST",

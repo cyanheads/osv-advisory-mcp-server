@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/osv-advisory-mcp-server",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Query OSV.dev for package vulnerabilities, batch-audit dependency lists, and fetch full advisory records via MCP. STDIO or Streamable HTTP.",
   "mcpName": "io.github.cyanheads/osv-advisory-mcp-server",
   "type": "module",
