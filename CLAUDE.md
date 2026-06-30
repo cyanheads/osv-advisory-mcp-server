@@ -1,8 +1,8 @@
 # Developer Protocol
 
 **Server:** osv-advisory-mcp-server
-**Version:** 0.1.7
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.10.9`
+**Version:** 0.1.8
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.10.10`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
 **Zod:** ^4.4.3
@@ -115,13 +115,25 @@ import { z } from '@cyanheads/mcp-ts-core';
 import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
-  requestTimeoutMs: z.coerce.number().default(10000).describe('HTTP request timeout for OSV.dev API calls (ms).'),
+  // .positive() rejects 0/negatives; a non-numeric value coerces to NaN and fails the number check.
+  requestTimeoutMs: z.coerce
+    .number()
+    .positive()
+    .default(10000)
+    .describe('HTTP request timeout for OSV.dev API calls (ms).'),
+  batchConcurrency: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10)
+    .describe('Max concurrent OSV.dev requests in osv_query_batch.'),
 });
 
 let _config: z.infer<typeof ServerConfigSchema> | undefined;
 export function getServerConfig() {
   _config ??= parseEnvConfig(ServerConfigSchema, {
     requestTimeoutMs: 'OSV_REQUEST_TIMEOUT_MS',
+    batchConcurrency: 'OSV_BATCH_CONCURRENCY',
   });
   return _config;
 }
@@ -129,7 +141,7 @@ export function getServerConfig() {
 
 `parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`OSV_REQUEST_TIMEOUT_MS`) not the path (`requestTimeoutMs`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
 
-> **This server has no required env vars.** OSV.dev is fully public and keyless. `OSV_REQUEST_TIMEOUT_MS` is optional (default: 10000 ms).
+> **This server has no required env vars.** OSV.dev is fully public and keyless. `OSV_REQUEST_TIMEOUT_MS` (positive number, default 10000 ms) and `OSV_BATCH_CONCURRENCY` (positive integer, default 10) are optional — invalid values fail startup rather than silently defaulting.
 
 ### Server instructions
 

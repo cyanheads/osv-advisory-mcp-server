@@ -1,6 +1,6 @@
 # osv-advisory-mcp-server - Directory Structure
 
-Generated on: 2026-06-20 17:51:01
+Generated on: 2026-06-30 20:36:34
 
 ```text
 osv-advisory-mcp-server/
@@ -126,6 +126,8 @@ osv-advisory-mcp-server/
 │   └── tool-defs-analysis/
 │       └── SKILL.md
 ├── src/
+│   ├── config/
+│   │   └── server-config.ts
 │   ├── mcp-server/
 │   │   ├── prompts/
 │   │   │   └── definitions/
@@ -144,6 +146,8 @@ osv-advisory-mcp-server/
 │   │       └── types.ts
 │   └── index.ts
 ├── tests/
+│   ├── config/
+│   │   └── server-config.test.ts
 │   ├── prompts/
 │   ├── resources/
 │   ├── services/
