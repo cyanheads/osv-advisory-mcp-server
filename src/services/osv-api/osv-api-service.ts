@@ -23,6 +23,9 @@ const OSV_BASE_URL = 'https://api.osv.dev';
 /** Default request timeout in milliseconds. */
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+/** Default maximum concurrent per-package queries in {@link OsvApiService.queryBatch}. */
+const DEFAULT_BATCH_CONCURRENCY = 10;
+
 /** Maximum backoff retries on 5xx. */
 const MAX_RETRIES = 3;
 
@@ -277,11 +280,21 @@ async function getJson<T>(
 // Service class
 // ---------------------------------------------------------------------------
 
+/** Construction options for {@link OsvApiService}. */
+export interface OsvApiServiceOptions {
+  /** Maximum concurrent per-package queries in {@link OsvApiService.queryBatch}. Defaults to {@link DEFAULT_BATCH_CONCURRENCY}. */
+  batchConcurrency?: number;
+  /** HTTP request timeout in milliseconds. Defaults to {@link DEFAULT_TIMEOUT_MS}. */
+  timeoutMs?: number;
+}
+
 export class OsvApiService {
   private readonly timeoutMs: number;
+  private readonly batchConcurrency: number;
 
-  constructor(timeoutMs?: number) {
-    this.timeoutMs = timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  constructor(options: OsvApiServiceOptions = {}) {
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.batchConcurrency = options.batchConcurrency ?? DEFAULT_BATCH_CONCURRENCY;
   }
 
   /**
@@ -340,8 +353,12 @@ export class OsvApiService {
   }
 
   /**
-   * Batch vulnerability query over multiple packages using parallel per-package POST /v1/query.
+   * Batch vulnerability query over multiple packages using per-package POST /v1/query.
    * This approach (vs /v1/querybatch) gives full records including `aliases` in one pass.
+   *
+   * Queries run through a bounded worker pool of at most `batchConcurrency` in-flight
+   * requests, so a large batch (up to 1000 packages) never turns one MCP call into an
+   * unbounded upstream burst. Results are positional (`result[i]` ↔ `packages[i]`).
    *
    * Returns per-package results with partial-success semantics:
    * a per-package error (e.g. invalid ecosystem) is reported inline without aborting the batch.
@@ -358,11 +375,33 @@ export class OsvApiService {
       error: string | null;
     }>
   > {
-    const results = await Promise.allSettled(
-      packages.map((pkg) => this.queryPackage(pkg.name, pkg.ecosystem, pkg.version, ctx)),
-    );
+    // Bounded concurrency: drain packages through a worker pool of at most
+    // `batchConcurrency` in-flight queries instead of fanning out all at once.
+    // Each worker pulls the next index off a shared cursor and writes its outcome
+    // positionally, preserving `settledResults[i]` ↔ `packages[i]` and the same
+    // per-package partial-success semantics as Promise.allSettled.
+    type PackageQueryResult = Awaited<ReturnType<OsvApiService['queryPackage']>>;
+    const settledResults = new Array<PromiseSettledResult<PackageQueryResult>>(packages.length);
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < packages.length) {
+        const i = cursor++;
+        // biome-ignore lint/style/noNonNullAssertion: i is bounded by cursor < packages.length
+        const pkg = packages[i]!;
+        try {
+          settledResults[i] = {
+            status: 'fulfilled',
+            value: await this.queryPackage(pkg.name, pkg.ecosystem, pkg.version, ctx),
+          };
+        } catch (reason) {
+          settledResults[i] = { status: 'rejected', reason };
+        }
+      }
+    };
+    const poolSize = Math.min(this.batchConcurrency, packages.length);
+    await Promise.all(Array.from({ length: poolSize }, () => worker()));
 
-    return results.map((settled, i) => {
+    return settledResults.map((settled, i) => {
       // packages and results are same-length (results derives from packages.map)
       // biome-ignore lint/style/noNonNullAssertion: same-length guarantee
       const pkg = packages[i]!;
@@ -402,8 +441,8 @@ export class OsvApiService {
 
 let _service: OsvApiService | undefined;
 
-export function initOsvApiService(timeoutMs?: number): void {
-  _service = new OsvApiService(timeoutMs);
+export function initOsvApiService(options?: OsvApiServiceOptions): void {
+  _service = new OsvApiService(options);
 }
 
 export function getOsvApiService(): OsvApiService {

@@ -71,7 +71,7 @@ describe('OsvApiService', () => {
   let service: OsvApiService;
 
   beforeEach(() => {
-    service = new OsvApiService(5000);
+    service = new OsvApiService({ timeoutMs: 5000 });
     vi.restoreAllMocks();
   });
 
@@ -196,6 +196,118 @@ describe('OsvApiService', () => {
       expect(results[0]!.vulns).toHaveLength(1);
       expect(results[0]!.vulns[0]!.aliases).toEqual(['CVE-2020-28500']);
       expect(results[0]!.error).toBeNull();
+    });
+  });
+
+  describe('queryBatch concurrency', () => {
+    /** Build packages p0..p{n-1} for concurrency tests. */
+    function makePackages(n: number) {
+      return Array.from({ length: n }, (_, i) => ({
+        name: `p${i}`,
+        ecosystem: 'npm',
+        version: '1.0.0',
+      }));
+    }
+
+    it('preserves positional result mapping under out-of-order completion', async () => {
+      const total = 6;
+      // Even-indexed packages are vulnerable, odd are clean; higher indices resolve
+      // sooner (delay = total - idx) so completion order is the reverse of input order.
+      // A positional bug (writing results in completion order) would scramble the parities.
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+          const idx = Number((JSON.parse(String(init.body)).package.name as string).slice(1));
+          const vulnerable = idx % 2 === 0;
+          return new Promise((resolve) =>
+            setTimeout(
+              () =>
+                resolve({
+                  ok: true,
+                  status: 200,
+                  text: () =>
+                    Promise.resolve(
+                      JSON.stringify(vulnerable ? QUERY_RESPONSE_WITH_VULN : EMPTY_QUERY_RESPONSE),
+                    ),
+                }),
+              total - idx,
+            ),
+          );
+        }),
+      );
+
+      const svc = new OsvApiService({ timeoutMs: 5000, batchConcurrency: 2 });
+      const ctx = createMockContext();
+      const results = await svc.queryBatch(makePackages(total), ctx);
+
+      expect(results).toHaveLength(total);
+      results.forEach((r, i) => {
+        expect(r.name).toBe(`p${i}`);
+        expect(r.error).toBeNull();
+        expect(r.vulns.length > 0).toBe(i % 2 === 0);
+      });
+    });
+
+    it('never exceeds the configured concurrency cap', async () => {
+      const cap = 3;
+      const total = 12;
+      let inFlight = 0;
+      let maxInFlight = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(() => {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          return new Promise((resolve) =>
+            setTimeout(() => {
+              inFlight--;
+              resolve({
+                ok: true,
+                status: 200,
+                text: () => Promise.resolve(JSON.stringify(EMPTY_QUERY_RESPONSE)),
+              });
+            }, 5),
+          );
+        }),
+      );
+
+      const svc = new OsvApiService({ timeoutMs: 5000, batchConcurrency: cap });
+      const ctx = createMockContext();
+      const results = await svc.queryBatch(makePackages(total), ctx);
+
+      expect(results).toHaveLength(total);
+      expect(maxInFlight).toBeLessThanOrEqual(cap);
+      // More packages than the cap, so the pool saturates exactly at the cap.
+      expect(maxInFlight).toBe(cap);
+    });
+
+    it('honors a custom concurrency cap (cap of 1 serializes requests)', async () => {
+      let inFlight = 0;
+      let maxInFlight = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(() => {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          return new Promise((resolve) =>
+            setTimeout(() => {
+              inFlight--;
+              resolve({
+                ok: true,
+                status: 200,
+                text: () => Promise.resolve(JSON.stringify(EMPTY_QUERY_RESPONSE)),
+              });
+            }, 3),
+          );
+        }),
+      );
+
+      const svc = new OsvApiService({ timeoutMs: 5000, batchConcurrency: 1 });
+      const ctx = createMockContext();
+      const results = await svc.queryBatch(makePackages(5), ctx);
+
+      expect(results).toHaveLength(5);
+      expect(maxInFlight).toBe(1);
     });
   });
 

@@ -6,6 +6,7 @@
  */
 
 import { createApp } from '@cyanheads/mcp-ts-core';
+import { getServerConfig } from './config/server-config.js';
 import {
   osvGetVulnerability,
   osvListEcosystems,
@@ -30,9 +31,7 @@ await createApp({
     '- No API key required. No rate limit published — prefer batch queries over repeated single queries.',
 
   setup() {
-    const rawTimeout = process.env.OSV_REQUEST_TIMEOUT_MS;
-    const parsed = rawTimeout ? Number(rawTimeout) : NaN;
-    const timeoutMs = !Number.isNaN(parsed) && parsed > 0 ? parsed : undefined;
-    initOsvApiService(timeoutMs);
+    const { requestTimeoutMs, batchConcurrency } = getServerConfig();
+    initOsvApiService({ timeoutMs: requestTimeoutMs, batchConcurrency });
   },
 });
