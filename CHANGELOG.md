@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.10](changelog/0.1.x/0.1.10.md) — 2026-07-11 · 🛡️ Security
+
+osv_query_package and osv_query_batch gain enrichment (empty-case notice + effective-query echo); batch error rows include the queried version; advisory summaries are framed behind <advisory_summary> boundaries as untrusted-data hardening; adopts @cyanheads/mcp-ts-core ^0.10.14
+
 ## [0.1.9](changelog/0.1.x/0.1.9.md) — 2026-06-30
 
 server.json advertises OSV_BATCH_CONCURRENCY (default 10) in both packages' environmentVariables, matching OSV_REQUEST_TIMEOUT_MS — MCP Registry discovery parity for the batch-concurrency knob added in 0.1.8
