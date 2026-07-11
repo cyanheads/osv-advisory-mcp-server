@@ -429,4 +429,43 @@ describe('osvQueryPackage', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('Results truncated');
   });
+
+  // #10: blank/whitespace-only identifiers must fail local schema validation before any OSV call.
+  describe('input validation (#10): rejects blank and whitespace-only fields', () => {
+    it('rejects an empty package name', () => {
+      expect(() =>
+        osvQueryPackage.input.parse({ name: '', ecosystem: 'npm', version: '4.17.1' }),
+      ).toThrow();
+    });
+
+    it('rejects a whitespace-only package name', () => {
+      expect(() =>
+        osvQueryPackage.input.parse({ name: '   ', ecosystem: 'npm', version: '4.17.1' }),
+      ).toThrow();
+    });
+
+    it('rejects an empty ecosystem', () => {
+      expect(() =>
+        osvQueryPackage.input.parse({ name: 'lodash', ecosystem: '', version: '4.17.1' }),
+      ).toThrow();
+    });
+
+    it('rejects a whitespace-only ecosystem', () => {
+      expect(() =>
+        osvQueryPackage.input.parse({ name: 'lodash', ecosystem: '  ', version: '4.17.1' }),
+      ).toThrow();
+    });
+
+    it('rejects an empty version', () => {
+      expect(() =>
+        osvQueryPackage.input.parse({ name: 'lodash', ecosystem: 'npm', version: '' }),
+      ).toThrow();
+    });
+
+    it('rejects a whitespace-only version', () => {
+      expect(() =>
+        osvQueryPackage.input.parse({ name: 'lodash', ecosystem: 'npm', version: '\t' }),
+      ).toThrow();
+    });
+  });
 });

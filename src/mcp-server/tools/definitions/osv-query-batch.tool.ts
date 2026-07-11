@@ -30,13 +30,29 @@ function worstSeverity(labels: Array<string | null | undefined>): string | null 
 }
 
 const PackageInputSchema = z.object({
-  name: z.string().describe('Package name as it appears in the ecosystem.'),
+  name: z
+    .string()
+    .min(1, 'Package name must not be blank — provide the exact package name for each row.')
+    .regex(/\S/, 'Package name must not be blank — provide the exact package name for each row.')
+    .describe('Package name as it appears in the ecosystem.'),
   ecosystem: z
     .string()
+    .min(
+      1,
+      'Ecosystem must not be blank — provide a valid ecosystem identifier for each row (see osv_list_ecosystems).',
+    )
+    .regex(
+      /\S/,
+      'Ecosystem must not be blank — provide a valid ecosystem identifier for each row (see osv_list_ecosystems).',
+    )
     .describe(
       'Ecosystem identifier. Case-sensitive exact match. Use osv_list_ecosystems to validate.',
     ),
-  version: z.string().describe('Exact version string to check.'),
+  version: z
+    .string()
+    .min(1, 'Version must not be blank — provide the exact version string for each row.')
+    .regex(/\S/, 'Version must not be blank — provide the exact version string for each row.')
+    .describe('Exact version string to check.'),
 });
 
 const BatchVulnSchema = z.object({

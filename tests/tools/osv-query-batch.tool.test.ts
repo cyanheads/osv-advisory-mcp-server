@@ -491,4 +491,43 @@ describe('osvQueryBatch', () => {
     // The truncated row must not be listed as clean.
     expect(text).not.toContain('Clean Packages');
   });
+
+  // #10: a blank/whitespace-only field in any row fails the whole call's input validation,
+  // rather than degrading that row to a per-row error via OSV.
+  describe('input validation (#10): rejects blank rows at schema parse', () => {
+    it('rejects a row with an empty package name', () => {
+      expect(() =>
+        osvQueryBatch.input.parse({
+          packages: [{ name: '', ecosystem: 'npm', version: '4.17.1' }],
+        }),
+      ).toThrow();
+    });
+
+    it('rejects a row with an empty ecosystem', () => {
+      expect(() =>
+        osvQueryBatch.input.parse({
+          packages: [{ name: 'lodash', ecosystem: '', version: '4.17.1' }],
+        }),
+      ).toThrow();
+    });
+
+    it('rejects a row with a whitespace-only version', () => {
+      expect(() =>
+        osvQueryBatch.input.parse({
+          packages: [{ name: 'lodash', ecosystem: 'npm', version: '   ' }],
+        }),
+      ).toThrow();
+    });
+
+    it('rejects the whole call when one row among valid rows is blank', () => {
+      expect(() =>
+        osvQueryBatch.input.parse({
+          packages: [
+            { name: 'lodash', ecosystem: 'npm', version: '4.17.1' },
+            { name: '', ecosystem: 'npm', version: '4.18.0' },
+          ],
+        }),
+      ).toThrow();
+    });
+  });
 });

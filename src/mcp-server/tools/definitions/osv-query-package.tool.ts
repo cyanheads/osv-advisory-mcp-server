@@ -112,11 +112,21 @@ export const osvQueryPackage = tool('osv_query_package', {
   input: z.object({
     name: z
       .string()
+      .min(1, 'Package name must not be blank — provide the exact package name.')
+      .regex(/\S/, 'Package name must not be blank — provide the exact package name.')
       .describe(
         'Package name as it appears in the ecosystem (e.g. "express", "requests", "serde"). Case-sensitive.',
       ),
     ecosystem: z
       .string()
+      .min(
+        1,
+        'Ecosystem must not be blank — provide a valid ecosystem identifier (see osv_list_ecosystems).',
+      )
+      .regex(
+        /\S/,
+        'Ecosystem must not be blank — provide a valid ecosystem identifier (see osv_list_ecosystems).',
+      )
       .describe(
         'Ecosystem identifier. Must be an exact match (case-sensitive). ' +
           'Use osv_list_ecosystems to see valid values. ' +
@@ -124,6 +134,8 @@ export const osvQueryPackage = tool('osv_query_package', {
       ),
     version: z
       .string()
+      .min(1, 'Version must not be blank — provide the exact version string to check.')
+      .regex(/\S/, 'Version must not be blank — provide the exact version string to check.')
       .describe(
         'Package version to check (e.g. "4.17.1", "3.1.4", "1.0.0"). ' +
           'Must be an exact version string, not a range.',
