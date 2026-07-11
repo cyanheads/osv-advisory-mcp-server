@@ -35,6 +35,35 @@ describe('osvListEcosystems', () => {
     // pypi (lowercase) is not valid — the correct value is PyPI
     expect(result.ecosystems).not.toContain('pypi');
     expect(result.ecosystems).not.toContain('NPM');
+    // #12: GSD is an OSV vulnerability-ID prefix, not an ecosystem — OSV rejects it.
+    expect(result.ecosystems).not.toContain('GSD');
+  });
+
+  it('pins the canonical OSV ecosystem set — 49 named + GIT, GSD absent (#12)', async () => {
+    const ctx = createMockContext();
+    const result = await osvListEcosystems.handler({}, ctx);
+    // Drift-catcher: the count is fixed to the OSV schema's ecosystemName enum (49) plus GIT.
+    // When OSV adds an ecosystem, update SUPPORTED_ECOSYSTEMS and this number together.
+    expect(result.ecosystems).toHaveLength(50);
+    // A representative slice of the canonical set — including the ones the stale list omitted.
+    for (const eco of [
+      'AlmaLinux',
+      'Alpaquita',
+      'Azure Linux',
+      'Ubuntu',
+      'FreeBSD',
+      'Kubernetes',
+      'Red Hat',
+      'VSCode',
+      'npm',
+      'PyPI',
+      'crates.io',
+      'GIT',
+    ]) {
+      expect(result.ecosystems).toContain(eco);
+    }
+    // GSD must never reappear.
+    expect(result.ecosystems).not.toContain('GSD');
   });
 
   it('formats output with ecosystem list', () => {

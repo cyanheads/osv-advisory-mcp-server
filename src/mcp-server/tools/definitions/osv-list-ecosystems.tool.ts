@@ -6,37 +6,69 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 
 /**
- * Supported ecosystem strings as of OSV schema spec, last verified 2026-05-30.
+ * Supported ecosystem strings from the OSV schema, last verified 2026-07-11.
+ * The 49 named ecosystems are the `$defs.ecosystemName` enum in the OSV schema's
+ * `validation/schema.json`; `GIT` is additionally accepted through the
+ * `$defs.ecosystemWithSuffix` pattern (it is NOT in the named enum) — 50 total.
+ * `GSD` is deliberately excluded: it is an OSV vulnerability-ID home-database
+ * prefix (e.g. `GSD-2020-1000`, `$defs.prefix`), not an ecosystem — OSV rejects
+ * it as one (HTTP 400 `Invalid ecosystem.`).
  * Strings are case-sensitive exact matches required by the OSV API.
- * Source: https://ossf.github.io/osv-schema/#affectedpackageecosystem-field
+ * Source: https://github.com/ossf/osv-schema/blob/main/validation/schema.json
+ *         (rendered: https://ossf.github.io/osv-schema/#affectedpackageecosystem-field)
  */
 export const SUPPORTED_ECOSYSTEMS: readonly string[] = [
   'AlmaLinux',
+  'Alpaquita',
   'Alpine',
   'Android',
+  'Azure Linux',
+  'BellSoft Hardened Containers',
+  'Bioconductor',
   'Bitnami',
   'Chainguard',
+  'CleanStart',
+  'ConanCenter',
   'CRAN',
+  'crates.io',
   'Debian',
-  'GIT',
+  'Docker Hardened Images',
+  'Echo',
+  'FreeBSD',
+  'GHC',
   'GitHub Actions',
   'Go',
-  'GSD',
   'Hackage',
   'Hex',
+  'Julia',
+  'Kubernetes',
   'Linux',
+  'Mageia',
   'Maven',
-  'NuGet',
+  'MinimOS',
   'npm',
+  'NuGet',
+  'opam',
+  'openEuler',
+  'openSUSE',
   'OSS-Fuzz',
   'Packagist',
+  'Photon OS',
   'Pub',
   'PyPI',
+  'Red Hat',
   'Rocky Linux',
+  'Root',
   'RubyGems',
+  'SUSE',
   'SwiftURL',
+  'TuxCare',
+  'Ubuntu',
+  'vcpkg',
+  'VSCode',
   'Wolfi',
-  'crates.io',
+  // Accepted via the ecosystemWithSuffix pattern, not the named ecosystemName enum.
+  'GIT',
 ] as const;
 
 export const osvListEcosystems = tool('osv_list_ecosystems', {
@@ -64,8 +96,9 @@ export const osvListEcosystems = tool('osv_list_ecosystems', {
     return {
       ecosystems: [...SUPPORTED_ECOSYSTEMS],
       note:
-        'This list is maintained from the OSV schema spec as of 2026-05-30 and may lag ' +
-        'newly added ecosystems. Canonical reference: ' +
+        'This list mirrors the OSV schema (validation/schema.json) as of 2026-07-11 — the ' +
+        'ecosystemName enum plus GIT. It may lag newly added ecosystems; OSV.dev is the ' +
+        'authority at query time. Canonical reference: ' +
         'https://ossf.github.io/osv-schema/#affectedpackageecosystem-field',
     };
   },
