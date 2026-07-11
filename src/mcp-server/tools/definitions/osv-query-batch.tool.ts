@@ -61,6 +61,11 @@ const PerPackageResultSchema = z.object({
   ecosystem: z.string().describe('Ecosystem from input.'),
   version: z.string().describe('Version from input.'),
   vulnerable: z.boolean().describe('True if any vulnerabilities were found.'),
+  truncated: z
+    .boolean()
+    .describe(
+      'True when OSV paginated beyond the fetch cap for this package — its result may be INCOMPLETE. A truncated row with no vulnerabilities is NOT confirmed clean.',
+    ),
   error: z
     .string()
     .nullable()
@@ -99,7 +104,14 @@ export const osvQueryBatch = tool('osv_query_batch', {
       .object({
         totalPackages: z.number().describe('Total packages queried.'),
         vulnerableCount: z.number().describe('Packages with at least one vulnerability.'),
-        cleanCount: z.number().describe('Packages with no vulnerabilities.'),
+        cleanCount: z
+          .number()
+          .describe('Packages confirmed clean — no vulnerabilities, no error, and not truncated.'),
+        truncatedCount: z
+          .number()
+          .describe(
+            'Packages whose OSV results were truncated (may be incomplete). A truncated package with no findings is NOT counted as clean.',
+          ),
         errorCount: z
           .number()
           .describe('Packages that returned an error (e.g. invalid ecosystem).'),
@@ -145,15 +157,20 @@ export const osvQueryBatch = tool('osv_query_batch', {
       ecosystem: r.ecosystem,
       version: r.version,
       vulnerable: r.vulns.length > 0,
+      truncated: r.truncated,
       error: r.error,
       vulnCount: r.vulns.length,
       vulns: r.vulns,
     }));
 
-    // Aggregate stats
+    // Aggregate stats. A truncated row is never counted as clean — its result may
+    // be incomplete, so "clean" requires no vulns, no error, AND not truncated.
     const vulnerableCount = results.filter((r) => r.vulnerable).length;
     const errorCount = results.filter((r) => r.error !== null).length;
-    const cleanCount = results.filter((r) => !r.vulnerable && r.error === null).length;
+    const truncatedCount = results.filter((r) => r.truncated).length;
+    const cleanCount = results.filter(
+      (r) => !r.vulnerable && r.error === null && !r.truncated,
+    ).length;
     const totalVulns = results.reduce((sum, r) => sum + r.vulnCount, 0);
     const allSeverities = results.flatMap((r) => r.vulns.map((v) => v.severityLabel));
     const worst = worstSeverity(allSeverities);
@@ -162,6 +179,7 @@ export const osvQueryBatch = tool('osv_query_batch', {
       totalPackages: results.length,
       vulnerableCount,
       cleanCount,
+      truncatedCount,
       errorCount,
       totalVulns,
       worstSeverity: worst,
@@ -170,10 +188,12 @@ export const osvQueryBatch = tool('osv_query_batch', {
     ctx.log.info('OSV batch complete', {
       totalPackages: results.length,
       vulnerableCount,
+      truncatedCount,
       totalVulns,
     });
 
-    const allClean = vulnerableCount === 0 && errorCount === 0;
+    // "All clean" must exclude truncated rows — a truncated batch is not confirmed clean.
+    const allClean = vulnerableCount === 0 && errorCount === 0 && truncatedCount === 0;
     const allErrors = errorCount === results.length;
     if (allClean || allErrors) {
       ctx.enrich.notice(
@@ -199,6 +219,7 @@ export const osvQueryBatch = tool('osv_query_batch', {
     lines.push(`| Total packages | ${summary.totalPackages} |`);
     lines.push(`| Vulnerable | ${summary.vulnerableCount} |`);
     lines.push(`| Clean | ${summary.cleanCount} |`);
+    lines.push(`| Truncated | ${summary.truncatedCount} |`);
     lines.push(`| Errors | ${summary.errorCount} |`);
     lines.push(`| Total vulns | ${summary.totalVulns} |`);
     lines.push(`| Worst severity | ${summary.worstSeverity ?? 'N/A'} |`);
@@ -207,7 +228,10 @@ export const osvQueryBatch = tool('osv_query_batch', {
     if (vulnerable.length > 0) {
       lines.push(`\n## Vulnerable Packages\n`);
       for (const pkg of vulnerable) {
-        lines.push(`### \`${pkg.name}\` @ \`${pkg.version}\` (${pkg.ecosystem})`);
+        const trunc = pkg.truncated
+          ? ' — ⚠️ truncated (more pages exist; list may be incomplete)'
+          : '';
+        lines.push(`### \`${pkg.name}\` @ \`${pkg.version}\` (${pkg.ecosystem})${trunc}`);
         lines.push(`**Vulnerabilities: ${pkg.vulnCount}**`);
         for (const vuln of pkg.vulns) {
           const aliases =
@@ -226,7 +250,22 @@ export const osvQueryBatch = tool('osv_query_batch', {
       }
     }
 
-    const clean = result.results.filter((r) => !r.vulnerable && r.error === null);
+    const incomplete = result.results.filter(
+      (r) => !r.vulnerable && r.error === null && r.truncated,
+    );
+    if (incomplete.length > 0) {
+      lines.push('\n## Incomplete (truncated) Packages\n');
+      lines.push(
+        'No vulnerabilities were retrieved within the page-fetch cap, but OSV had more pages — NOT confirmed clean.\n',
+      );
+      for (const pkg of incomplete) {
+        lines.push(
+          `- \`${pkg.name}\` @ \`${pkg.version}\` (${pkg.ecosystem}) — ⚠️ truncated, results incomplete`,
+        );
+      }
+    }
+
+    const clean = result.results.filter((r) => !r.vulnerable && r.error === null && !r.truncated);
     if (clean.length > 0) {
       lines.push(`\n## Clean Packages\n`);
       for (const pkg of clean) {

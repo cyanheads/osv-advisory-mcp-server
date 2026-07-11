@@ -16,6 +16,9 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 /** Default in-flight request cap for `osv_query_batch` when `OSV_BATCH_CONCURRENCY` is unset. */
 const DEFAULT_BATCH_CONCURRENCY = 10;
 
+/** Default page-follow cap for `osv_query_package` when `OSV_QUERY_MAX_PAGES` is unset. */
+const DEFAULT_MAX_QUERY_PAGES = 10;
+
 /**
  * Server config schema. `z.coerce.number()` turns the always-string env value into
  * a number; `.positive()` rejects `0` and negatives, and a non-numeric value coerces
@@ -36,6 +39,14 @@ const ServerConfigSchema = z.object({
     .describe(
       'Maximum number of concurrent OSV.dev requests issued by osv_query_batch. Must be a positive integer.',
     ),
+  maxQueryPages: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(DEFAULT_MAX_QUERY_PAGES)
+    .describe(
+      'Maximum number of OSV.dev result pages osv_query_package follows before marking a result truncated. Must be a positive integer.',
+    ),
 });
 
 export type ServerConfig = z.infer<typeof ServerConfigSchema>;
@@ -45,14 +56,15 @@ let _config: ServerConfig | undefined;
 /**
  * Lazily parse and cache server config from the environment.
  *
- * @throws {McpError} `ConfigurationError` naming `OSV_REQUEST_TIMEOUT_MS` or
- *   `OSV_BATCH_CONCURRENCY` when the corresponding value is non-numeric, zero, or
- *   negative (or non-integer for the concurrency cap).
+ * @throws {McpError} `ConfigurationError` naming `OSV_REQUEST_TIMEOUT_MS`,
+ *   `OSV_BATCH_CONCURRENCY`, or `OSV_QUERY_MAX_PAGES` when the corresponding value
+ *   is non-numeric, zero, or negative (or non-integer for the integer caps).
  */
 export function getServerConfig(): ServerConfig {
   _config ??= parseEnvConfig(ServerConfigSchema, {
     requestTimeoutMs: 'OSV_REQUEST_TIMEOUT_MS',
     batchConcurrency: 'OSV_BATCH_CONCURRENCY',
+    maxQueryPages: 'OSV_QUERY_MAX_PAGES',
   });
   return _config;
 }

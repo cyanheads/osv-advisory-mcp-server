@@ -386,11 +386,11 @@ describe('OsvApiService', () => {
       expect(vuln.schemaVersion).toBe('');
     });
 
-    it('filters out affected entries with no package identity (CVE GIT-range-only records)', async () => {
-      // Live CVE records (e.g. CVE-2020-28500) have affected entries with no `package` field —
-      // only a GIT range. The normalization must skip these so `affected` and `affectedRanges`
-      // do not contain entries with empty packageName/ecosystem, which would produce useless
-      // output like `- \`\` ()` in the format text.
+    it('surfaces affected entries with no package identity (CVE GIT-range-only records)', async () => {
+      // #13: Live CVE records (e.g. CVE-2020-28500) have affected entries with no `package`
+      // field — only a GIT range. Normalization must PRESERVE these (empty packageName/
+      // ecosystem, the GIT repo, and ordered events) so the only affected source range is
+      // not silently lost.
       const cveStyleResponse = {
         vulns: [
           {
@@ -409,6 +409,7 @@ describe('OsvApiService', () => {
                 ranges: [
                   {
                     type: 'GIT',
+                    repo: 'https://github.com/lodash/lodash',
                     events: [{ introduced: '0' }, { fixed: 'c6e281b' }],
                   },
                 ],
@@ -428,14 +429,207 @@ describe('OsvApiService', () => {
 
       const vuln = result.vulns[0]!;
       expect(vuln.id).toBe('CVE-2020-28500');
-      // affected and affectedRanges must be empty — no packageName/ecosystem to surface
-      expect(vuln.affected).toHaveLength(0);
-      expect(vuln.affectedRanges).toHaveLength(0);
-      expect(vuln.fixedVersions).toHaveLength(0);
+      // The package-less GIT entry is preserved, not dropped.
+      expect(vuln.affected).toHaveLength(1);
+      const entry = vuln.affected[0]!;
+      expect(entry.packageName).toBe('');
+      expect(entry.ecosystem).toBe('');
+      const range = entry.ranges[0]!;
+      expect(range.rangeType).toBe('GIT');
+      expect(range.repo).toBe('https://github.com/lodash/lodash');
+      // Ordered events preserved, in order.
+      expect(range.events).toEqual([
+        { type: 'introduced', value: '0' },
+        { type: 'fixed', value: 'c6e281b' },
+      ]);
+      // The flat affectedRanges view surfaces the package-less range too.
+      expect(vuln.affectedRanges).toHaveLength(1);
+      expect(vuln.affectedRanges[0]!.repo).toBe('https://github.com/lodash/lodash');
+      expect(vuln.affectedRanges[0]!.packageName).toBe('');
       // summary is null upstream → normalized to empty string
       expect(vuln.summary).toBe('');
       // severityLabel null because no database_specific.severity
       expect(vuln.severityLabel).toBeNull();
+    });
+
+    it('preserves explicit versions[] and multi-interval ordered events (#13)', async () => {
+      const response = {
+        vulns: [
+          {
+            id: 'GHSA-multi-interval',
+            summary: 'Advisory with explicit versions and two intervals',
+            schema_version: '1.7.3',
+            affected: [
+              {
+                package: { name: 'lodash-rails', ecosystem: 'RubyGems' },
+                versions: ['1.0.0', '1.0.1', '1.1.0'],
+                ranges: [
+                  {
+                    type: 'ECOSYSTEM',
+                    events: [
+                      { introduced: '0' },
+                      { fixed: '1.2.0' },
+                      { introduced: '2.0.0' },
+                      { fixed: '2.1.0' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      vi.stubGlobal('fetch', mockFetch([{ status: 200, body: response }]));
+      const ctx = createMockContext();
+      const result = await service.queryPackage('lodash-rails', 'RubyGems', '1.0.0', ctx);
+      if (result.invalid) return;
+
+      const entry = result.vulns[0]!.affected[0]!;
+      // Explicit affected versions preserved.
+      expect(entry.versions).toEqual(['1.0.0', '1.0.1', '1.1.0']);
+      // Ordered events preserve BOTH intervals — the scalar view would collapse them.
+      expect(entry.ranges[0]!.events).toEqual([
+        { type: 'introduced', value: '0' },
+        { type: 'fixed', value: '1.2.0' },
+        { type: 'introduced', value: '2.0.0' },
+        { type: 'fixed', value: '2.1.0' },
+      ]);
+      // Scalar convenience view keeps the last-value collapse (back-compat, unchanged).
+      expect(entry.ranges[0]!.introduced).toBe('2.0.0');
+      expect(entry.ranges[0]!.fixed).toBe('2.1.0');
+      // Flat range carries versions + ordered events as well.
+      expect(result.vulns[0]!.affectedRanges[0]!.versions).toEqual(['1.0.0', '1.0.1', '1.1.0']);
+      expect(result.vulns[0]!.affectedRanges[0]!.events).toHaveLength(4);
+    });
+
+    it('preserves the withdrawn timestamp when present, omits it otherwise (#14)', async () => {
+      const withdrawnResponse = {
+        id: 'CVE-2024-0968',
+        summary: 'Withdrawn advisory',
+        withdrawn: '2024-05-15T05:33:02.244296Z',
+        schema_version: '1.7.3',
+      };
+      vi.stubGlobal('fetch', mockFetch([{ status: 200, body: withdrawnResponse }]));
+      let ctx = createMockContext();
+      const withdrawn = await service.getVulnerability('CVE-2024-0968', ctx);
+      expect(withdrawn!.withdrawn).toBe('2024-05-15T05:33:02.244296Z');
+
+      // An active advisory (no withdrawn field) must not carry the field.
+      vi.stubGlobal('fetch', mockFetch([{ status: 200, body: VULN_DETAIL_RESPONSE }]));
+      ctx = createMockContext();
+      const active = await service.getVulnerability('GHSA-29mw-wpgm-hmr9', ctx);
+      expect(active!.withdrawn).toBeUndefined();
+    });
+  });
+
+  describe('pagination (#15)', () => {
+    it('follows next_page_token and accumulates vulns until the token disappears', async () => {
+      const page1 = { vulns: [{ id: 'V1', schema_version: '1' }], next_page_token: 'tok-1' };
+      const page2 = { vulns: [{ id: 'V2', schema_version: '1' }] }; // no token — complete
+      vi.stubGlobal(
+        'fetch',
+        mockFetch([
+          { status: 200, body: page1 },
+          { status: 200, body: page2 },
+        ]),
+      );
+      const ctx = createMockContext();
+      const result = await service.queryPackage('pkg', 'npm', '1.0.0', ctx);
+      if (result.invalid) return;
+      expect(result.vulns.map((v) => v.id)).toEqual(['V1', 'V2']);
+      expect(result.truncated).toBe(false);
+    });
+
+    it('sends the page_token in the follow-up request body, omits it on page one', async () => {
+      const bodies: string[] = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+          bodies.push(String(init.body));
+          const call = bodies.length;
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: () =>
+              Promise.resolve(JSON.stringify(call === 1 ? { next_page_token: 'tok-abc' } : {})),
+          });
+        }),
+      );
+      const ctx = createMockContext();
+      await service.queryPackage('pkg', 'npm', '1.0.0', ctx);
+      expect(bodies).toHaveLength(2);
+      expect(JSON.parse(bodies[0]!).page_token).toBeUndefined();
+      expect(JSON.parse(bodies[1]!).page_token).toBe('tok-abc');
+    });
+
+    it('never reports an empty paginated first page as clean — marks it truncated', async () => {
+      // OSV returns a bare next_page_token with zero vulns; with the cap reached and a
+      // token still pending, the result is truncated (incomplete), NOT a false clean.
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(() =>
+          Promise.resolve({
+            ok: true,
+            status: 200,
+            text: () => Promise.resolve(JSON.stringify({ next_page_token: 'always-more' })),
+          }),
+        ),
+      );
+      const svc = new OsvApiService({ timeoutMs: 5000, maxQueryPages: 1 });
+      const ctx = createMockContext();
+      const result = await svc.queryPackage('Kernel', 'Linux', '5.10.0', ctx);
+      if (result.invalid) return;
+      expect(result.vulns).toHaveLength(0);
+      expect(result.truncated).toBe(true);
+    });
+
+    it('bounds total work at the page cap when OSV keeps returning a token', async () => {
+      let calls = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(() => {
+          calls++;
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: () => Promise.resolve(JSON.stringify({ next_page_token: 'more' })),
+          });
+        }),
+      );
+      const svc = new OsvApiService({ timeoutMs: 5000, maxQueryPages: 3 });
+      const ctx = createMockContext();
+      const result = await svc.queryPackage('Kernel', 'Linux', '5.10.0', ctx);
+      if (result.invalid) return;
+      expect(calls).toBe(3); // cap enforced
+      expect(result.truncated).toBe(true);
+    });
+
+    it('batch rows inherit truncation from the per-package query', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+          const name = JSON.parse(String(init.body)).package.name as string;
+          // "Kernel" always paginates (never resolves); "express" is clean in one page.
+          const body = name === 'Kernel' ? { next_page_token: 'more' } : {};
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            text: () => Promise.resolve(JSON.stringify(body)),
+          });
+        }),
+      );
+      const svc = new OsvApiService({ timeoutMs: 5000, maxQueryPages: 2, batchConcurrency: 2 });
+      const ctx = createMockContext();
+      const results = await svc.queryBatch(
+        [
+          { name: 'Kernel', ecosystem: 'Linux', version: '5.10.0' },
+          { name: 'express', ecosystem: 'npm', version: '4.18.0' },
+        ],
+        ctx,
+      );
+      expect(results[0]!.truncated).toBe(true);
+      expect(results[1]!.truncated).toBe(false);
     });
   });
 });

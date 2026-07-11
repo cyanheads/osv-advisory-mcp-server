@@ -7,18 +7,53 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getOsvApiService } from '@/services/osv-api/osv-api-service.js';
 
+const RangeEventSchema = z.object({
+  type: z
+    .string()
+    .describe('Event boundary type: "introduced", "fixed", "last_affected", or "limit".'),
+  value: z.string().describe('Version string or commit identifier at this boundary.'),
+});
+
 const AffectedRangeSchema = z.object({
   packageName: z
     .string()
-    .describe('Affected package name (may differ from queried name for umbrella advisories).'),
-  ecosystem: z.string().describe('Affected package ecosystem.'),
+    .describe(
+      'Affected package name (may differ from queried name for umbrella advisories). Empty for source-only advisory ranges.',
+    ),
+  ecosystem: z
+    .string()
+    .describe('Affected package ecosystem. Empty for source-only advisory ranges.'),
   rangeType: z.string().describe('"SEMVER", "ECOSYSTEM", or "GIT".'),
-  introduced: z.string().optional().describe('First affected version.'),
-  fixed: z.string().optional().describe('First safe version — the version to upgrade to.'),
+  repo: z
+    .string()
+    .optional()
+    .describe('Source repository URL for GIT ranges. Absent on version ranges.'),
+  introduced: z
+    .string()
+    .optional()
+    .describe('First affected version (convenience view — see events[]).'),
+  fixed: z
+    .string()
+    .optional()
+    .describe('First safe version — the version to upgrade to (convenience view — see events[]).'),
   lastAffected: z
     .string()
     .optional()
-    .describe('Last affected version. Present when no fix exists.'),
+    .describe(
+      'Last affected version. Present when no fix exists (convenience view — see events[]).',
+    ),
+  events: z
+    .array(RangeEventSchema.describe('One ordered range event.'))
+    .optional()
+    .describe(
+      'Ordered event boundaries for this range — the loss-free view preserving multiple introduced/fixed pairs the scalar fields collapse.',
+    ),
+  versions: z
+    .array(z.string().describe('An explicitly-listed affected version.'))
+    .optional()
+    .describe(
+      'Explicit affected versions listed on this package entry. Absent or empty when affected versions are expressed only as ranges.',
+    ),
 });
 
 const SeverityEntrySchema = z.object({
@@ -99,7 +134,12 @@ export const osvQueryPackage = tool('osv_query_package', {
     vulns: z
       .array(VulnOutputSchema.describe('One vulnerability record.'))
       .describe(
-        'Vulnerabilities matching this package version. Empty array means no known vulnerabilities.',
+        'Vulnerabilities matching this package version. An empty array means no known vulnerabilities ONLY when truncated is false.',
+      ),
+    truncated: z
+      .boolean()
+      .describe(
+        'True when OSV returned more result pages than the fetch cap could follow — the vulnerability list may be INCOMPLETE. A truncated empty list is NOT a clean result; raise OSV_QUERY_MAX_PAGES or narrow the query.',
       ),
     queryMeta: z
       .object({
@@ -153,11 +193,17 @@ export const osvQueryPackage = tool('osv_query_package', {
       );
     }
 
-    ctx.log.info('OSV query complete', { vulnCount: result.vulns.length });
+    ctx.log.info('OSV query complete', {
+      vulnCount: result.vulns.length,
+      truncated: result.truncated,
+    });
 
     if (result.vulns.length === 0) {
+      // A truncated empty page is NOT a clean result — never emit the false-clean notice.
       ctx.enrich.notice(
-        `No known vulnerabilities for ${input.name}@${input.version} (${input.ecosystem}).`,
+        result.truncated
+          ? `Results for ${input.name}@${input.version} (${input.ecosystem}) are INCOMPLETE — OSV paginated beyond the fetch cap before any page fully resolved. This is NOT a clean result; raise OSV_QUERY_MAX_PAGES or narrow the query.`
+          : `No known vulnerabilities for ${input.name}@${input.version} (${input.ecosystem}).`,
       );
       ctx.enrich.echo(`${input.name}@${input.version} (${input.ecosystem})`);
     }
@@ -175,6 +221,7 @@ export const osvQueryPackage = tool('osv_query_package', {
         published: v.published,
         modified: v.modified,
       })),
+      truncated: result.truncated,
       queryMeta: {
         package: input.name,
         ecosystem: input.ecosystem,
@@ -192,11 +239,20 @@ export const osvQueryPackage = tool('osv_query_package', {
     );
 
     if (result.vulns.length === 0) {
-      lines.push('✅ No known vulnerabilities found.');
+      lines.push(
+        result.truncated
+          ? '⚠️ **Results truncated** — OSV returned additional pages beyond the fetch cap. This is NOT a confirmed clean result; more vulnerabilities may exist. Raise OSV_QUERY_MAX_PAGES or narrow the query.'
+          : '✅ No known vulnerabilities found.',
+      );
       return [{ type: 'text', text: lines.join('\n') }];
     }
 
     lines.push(`**Vulnerabilities found: ${result.vulns.length}**\n`);
+    if (result.truncated) {
+      lines.push(
+        '⚠️ **Results truncated** — more advisory pages exist beyond the fetch cap; this list may be incomplete.\n',
+      );
+    }
 
     for (const vuln of result.vulns) {
       lines.push(`## ${vuln.id}`);
@@ -223,10 +279,18 @@ export const osvQueryPackage = tool('osv_query_package', {
           const intro = r.introduced !== undefined ? `introduced: ${r.introduced}` : '';
           const fix = r.fixed !== undefined ? `fixed: ${r.fixed}` : '';
           const last = r.lastAffected !== undefined ? `last_affected: ${r.lastAffected}` : '';
-          const events = [intro, fix, last].filter(Boolean).join(', ');
-          lines.push(
-            `- \`${r.packageName}\` (${r.ecosystem}) [${r.rangeType}]: ${events || 'no events'}`,
-          );
+          const scalar = [intro, fix, last].filter(Boolean).join(', ');
+          const repoStr = r.repo ? ` repo: ${r.repo}` : '';
+          const pkgLabel = r.packageName
+            ? `\`${r.packageName}\` (${r.ecosystem})`
+            : '_source range_';
+          lines.push(`- ${pkgLabel} [${r.rangeType}]${repoStr}: ${scalar || 'no events'}`);
+          if (r.events && r.events.length > 0) {
+            lines.push(`  - events: ${r.events.map((e) => `${e.type}=${e.value}`).join(' → ')}`);
+          }
+          if (r.versions && r.versions.length > 0) {
+            lines.push(`  - versions: ${r.versions.join(', ')}`);
+          }
         }
       }
       if (vuln.cweIds.length > 0) {

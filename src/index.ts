@@ -31,7 +31,7 @@ await createApp({
     '- No API key required. No rate limit published — prefer batch queries over repeated single queries.',
 
   setup() {
-    const { requestTimeoutMs, batchConcurrency } = getServerConfig();
-    initOsvApiService({ timeoutMs: requestTimeoutMs, batchConcurrency });
+    const { requestTimeoutMs, batchConcurrency, maxQueryPages } = getServerConfig();
+    initOsvApiService({ timeoutMs: requestTimeoutMs, batchConcurrency, maxQueryPages });
   },
 });

@@ -14,16 +14,20 @@ export interface RawOsvSeverity {
   type: 'CVSS_V2' | 'CVSS_V3' | 'CVSS_V4';
 }
 
-/** Raw event in an affected range. */
+/** Raw event in an affected range. Each event object carries exactly one boundary key. */
 export interface RawOsvEvent {
   fixed?: string;
   introduced?: string;
   last_affected?: string;
+  /** OSV's fourth event type — an upper bound on a fuzzed range (rare). */
+  limit?: string;
 }
 
 /** Raw version range in an affected entry. */
 export interface RawOsvRange {
   events?: RawOsvEvent[];
+  /** Source repository URL — populated on GIT ranges, absent on version ranges. */
+  repo?: string;
   type: 'SEMVER' | 'ECOSYSTEM' | 'GIT';
 }
 
@@ -38,6 +42,8 @@ export interface RawOsvPackage {
 export interface RawOsvAffected {
   package?: RawOsvPackage;
   ranges?: RawOsvRange[];
+  /** Explicitly enumerated affected versions, when the advisory lists them. */
+  versions?: string[];
 }
 
 /** Raw reference entry. */
@@ -65,6 +71,8 @@ export interface RawOsvVulnerability {
   schema_version?: string;
   severity?: RawOsvSeverity[];
   summary?: string;
+  /** ISO 8601 timestamp present only on withdrawn advisories. */
+  withdrawn?: string;
 }
 
 /** Abbreviated vuln entry as returned inside POST /v1/querybatch results. */
@@ -75,6 +83,8 @@ export interface RawOsvBatchVulnEntry {
 
 /** Response envelope from POST /v1/query (success). */
 export interface RawOsvQueryResponse {
+  /** Opaque continuation token — present when more result pages remain. */
+  next_page_token?: string;
   vulns?: RawOsvVulnerability[];
 }
 
@@ -104,14 +114,32 @@ export interface OsvSeverityEntry {
   type: string;
 }
 
+/**
+ * Ordered event within an affected range. Preserves interval boundaries the
+ * collapsed scalar fields (`introduced`/`fixed`/`lastAffected`) cannot express
+ * when a range carries multiple introduced/fixed pairs.
+ */
+export interface OsvRangeEvent {
+  /** Boundary type: 'introduced', 'fixed', 'last_affected', or 'limit'. */
+  type: string;
+  /** Version string or commit identifier at this boundary. */
+  value: string;
+}
+
 /** Normalized affected version range for output. */
 export interface OsvAffectedRange {
   ecosystem: string;
+  /** Ordered event boundaries — the loss-free view of the range's intervals. */
+  events?: OsvRangeEvent[];
   fixed?: string;
   introduced?: string;
   lastAffected?: string;
   packageName: string;
   rangeType: string;
+  /** Source repository URL for GIT ranges (absent for version ranges). */
+  repo?: string;
+  /** Explicit affected versions listed on the parent affected entry. */
+  versions?: string[];
 }
 
 /** Normalized vulnerability record (full). */
@@ -120,11 +148,17 @@ export interface OsvVulnerability {
     packageName: string;
     ecosystem: string;
     purl?: string;
+    /** Explicitly enumerated affected versions, when the advisory lists them. */
+    versions?: string[];
     ranges: Array<{
       rangeType: string;
       introduced?: string;
       fixed?: string;
       lastAffected?: string;
+      /** Source repository URL for GIT ranges (absent for version ranges). */
+      repo?: string;
+      /** Ordered event boundaries — the loss-free interval view. */
+      events?: OsvRangeEvent[];
     }>;
   }>;
   /** Flat ranges extracted for query output. */
@@ -142,6 +176,8 @@ export interface OsvVulnerability {
   severity: OsvSeverityEntry[];
   severityLabel: string | null;
   summary: string;
+  /** ISO 8601 timestamp present only on withdrawn advisories. */
+  withdrawn?: string;
 }
 
 /** Brief per-package vuln entry for batch output. */

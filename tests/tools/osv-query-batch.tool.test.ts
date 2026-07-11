@@ -21,8 +21,9 @@ function makeResult(
     fixedVersions: string[];
   }> = [],
   error: string | null = null,
+  truncated = false,
 ) {
-  return { name, ecosystem, version, vulns, error };
+  return { name, ecosystem, version, vulns, error, truncated };
 }
 
 describe('osvQueryBatch', () => {
@@ -259,6 +260,7 @@ describe('osvQueryBatch', () => {
           ecosystem: 'npm',
           version: '4.17.1',
           vulnerable: true,
+          truncated: false,
           error: null,
           vulnCount: 1,
           vulns: [
@@ -276,6 +278,7 @@ describe('osvQueryBatch', () => {
           ecosystem: 'npm',
           version: '4.18.0',
           vulnerable: false,
+          truncated: false,
           error: null,
           vulnCount: 0,
           vulns: [],
@@ -285,6 +288,7 @@ describe('osvQueryBatch', () => {
         totalPackages: 2,
         vulnerableCount: 1,
         cleanCount: 1,
+        truncatedCount: 0,
         errorCount: 0,
         totalVulns: 1,
         worstSeverity: 'MODERATE',
@@ -309,6 +313,7 @@ describe('osvQueryBatch', () => {
           ecosystem: 'npm',
           version: '4.18.0',
           vulnerable: false,
+          truncated: false,
           error: null,
           vulnCount: 0,
           vulns: [],
@@ -318,6 +323,7 @@ describe('osvQueryBatch', () => {
         totalPackages: 1,
         vulnerableCount: 0,
         cleanCount: 1,
+        truncatedCount: 0,
         errorCount: 0,
         totalVulns: 0,
         worstSeverity: null,
@@ -340,6 +346,7 @@ describe('osvQueryBatch', () => {
           ecosystem: 'pypi',
           version: '2.31.0',
           vulnerable: false,
+          truncated: false,
           error: 'Invalid ecosystem.',
           vulnCount: 0,
           vulns: [],
@@ -349,6 +356,7 @@ describe('osvQueryBatch', () => {
         totalPackages: 1,
         vulnerableCount: 0,
         cleanCount: 0,
+        truncatedCount: 0,
         errorCount: 1,
         totalVulns: 0,
         worstSeverity: null,
@@ -425,5 +433,62 @@ describe('osvQueryBatch', () => {
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toBeUndefined();
     expect(enrichment.effectiveQuery).toBeUndefined();
+  });
+
+  it('surfaces per-row truncation and excludes truncated rows from cleanCount (#15)', async () => {
+    mockService.queryBatch.mockResolvedValue([
+      makeResult('express', 'npm', '4.18.0'), // clean
+      makeResult('Kernel', 'Linux', '5.10.0', [], null, true), // truncated, no findings
+    ]);
+    const ctx = createMockContext();
+    const input = osvQueryBatch.input.parse({
+      packages: [
+        { name: 'express', ecosystem: 'npm', version: '4.18.0' },
+        { name: 'Kernel', ecosystem: 'Linux', version: '5.10.0' },
+      ],
+    });
+    const result = await osvQueryBatch.handler(input, ctx);
+
+    expect(result.results[1]!.truncated).toBe(true);
+    expect(result.summary.truncatedCount).toBe(1);
+    // The truncated row is NOT counted as clean.
+    expect(result.summary.cleanCount).toBe(1);
+
+    // A batch with a truncated row is NOT "all clean" — no false all-clean notice.
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toBeUndefined();
+  });
+
+  it('renders truncated-but-empty rows under an Incomplete section, not Clean (#15)', () => {
+    const output = {
+      results: [
+        {
+          name: 'Kernel',
+          ecosystem: 'Linux',
+          version: '5.10.0',
+          vulnerable: false,
+          truncated: true,
+          error: null,
+          vulnCount: 0,
+          vulns: [],
+        },
+      ],
+      summary: {
+        totalPackages: 1,
+        vulnerableCount: 0,
+        cleanCount: 0,
+        truncatedCount: 1,
+        errorCount: 0,
+        totalVulns: 0,
+        worstSeverity: null,
+      },
+    };
+    const blocks = osvQueryBatch.format!(output);
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('Incomplete (truncated) Packages');
+    expect(text).toContain('Kernel');
+    expect(text).toContain('| Truncated | 1 |');
+    // The truncated row must not be listed as clean.
+    expect(text).not.toContain('Clean Packages');
   });
 });

@@ -75,7 +75,11 @@ describe('osvQueryPackage', () => {
   });
 
   it('returns vulnerabilities for a known vulnerable package', async () => {
-    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [SAMPLE_VULN] });
+    mockService.queryPackage.mockResolvedValue({
+      invalid: false,
+      vulns: [SAMPLE_VULN],
+      truncated: false,
+    });
     const ctx = createMockContext({ errors: osvQueryPackage.errors });
     const input = osvQueryPackage.input.parse({
       name: 'lodash',
@@ -94,7 +98,7 @@ describe('osvQueryPackage', () => {
   });
 
   it('returns empty vulns array for a clean package', async () => {
-    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [] });
+    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [], truncated: false });
     const ctx = createMockContext({ errors: osvQueryPackage.errors });
     const input = osvQueryPackage.input.parse({
       name: 'lodash',
@@ -125,7 +129,11 @@ describe('osvQueryPackage', () => {
   });
 
   it('handles sparse upstream vuln with null severity and empty aliases', async () => {
-    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [SPARSE_VULN] });
+    mockService.queryPackage.mockResolvedValue({
+      invalid: false,
+      vulns: [SPARSE_VULN],
+      truncated: false,
+    });
     const ctx = createMockContext({ errors: osvQueryPackage.errors });
     const input = osvQueryPackage.input.parse({
       name: 'requests',
@@ -180,7 +188,7 @@ describe('osvQueryPackage', () => {
 
   it('handles empty {} API response (no vulns key) as zero vulnerabilities', async () => {
     // OSV returns {} (not {vulns:[]}) when no results — service normalizes this to []
-    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [] });
+    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [], truncated: false });
     const ctx = createMockContext({ errors: osvQueryPackage.errors });
     const input = osvQueryPackage.input.parse({
       name: 'not-a-real-package',
@@ -220,7 +228,11 @@ describe('osvQueryPackage', () => {
       fixedVersions: [], // empty — no fix
     };
 
-    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [unfixedVuln] });
+    mockService.queryPackage.mockResolvedValue({
+      invalid: false,
+      vulns: [unfixedVuln],
+      truncated: false,
+    });
     const ctx = createMockContext({ errors: osvQueryPackage.errors });
     const input = osvQueryPackage.input.parse({
       name: 'unsafe-lib',
@@ -293,7 +305,7 @@ describe('osvQueryPackage', () => {
   });
 
   it('enriches the clean path with a no-vulns notice and an effective-query echo', async () => {
-    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [] });
+    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [], truncated: false });
     const ctx = createMockContext({ errors: osvQueryPackage.errors });
     const input = osvQueryPackage.input.parse({
       name: 'is-number',
@@ -309,7 +321,11 @@ describe('osvQueryPackage', () => {
   });
 
   it('does not enrich when vulnerabilities are found', async () => {
-    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [SAMPLE_VULN] });
+    mockService.queryPackage.mockResolvedValue({
+      invalid: false,
+      vulns: [SAMPLE_VULN],
+      truncated: false,
+    });
     const ctx = createMockContext({ errors: osvQueryPackage.errors });
     const input = osvQueryPackage.input.parse({
       name: 'lodash',
@@ -321,5 +337,96 @@ describe('osvQueryPackage', () => {
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toBeUndefined();
     expect(enrichment.effectiveQuery).toBeUndefined();
+  });
+
+  it('passes through repo, ordered events, and versions on affected ranges (#13)', async () => {
+    const vulnWithRichRange: OsvVulnerability = {
+      ...SAMPLE_VULN,
+      affectedRanges: [
+        {
+          packageName: 'lodash',
+          ecosystem: 'npm',
+          rangeType: 'SEMVER',
+          introduced: '0',
+          fixed: '4.17.21',
+          repo: 'https://github.com/lodash/lodash',
+          events: [
+            { type: 'introduced', value: '0' },
+            { type: 'fixed', value: '4.17.21' },
+          ],
+          versions: ['4.17.19', '4.17.20'],
+        },
+      ],
+    };
+    mockService.queryPackage.mockResolvedValue({
+      invalid: false,
+      vulns: [vulnWithRichRange],
+      truncated: false,
+    });
+    const ctx = createMockContext({ errors: osvQueryPackage.errors });
+    const input = osvQueryPackage.input.parse({
+      name: 'lodash',
+      ecosystem: 'npm',
+      version: '4.17.1',
+    });
+    const result = await osvQueryPackage.handler(input, ctx);
+
+    const range = result.vulns[0]!.affectedRanges[0]!;
+    expect(range.repo).toBe('https://github.com/lodash/lodash');
+    expect(range.events).toHaveLength(2);
+    expect(range.versions).toEqual(['4.17.19', '4.17.20']);
+
+    const blocks = osvQueryPackage.format!(result);
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('repo: https://github.com/lodash/lodash');
+    expect(text).toContain('events: introduced=0 → fixed=4.17.21');
+    expect(text).toContain('versions: 4.17.19, 4.17.20');
+  });
+
+  it('discloses truncation instead of a false clean on a paginated empty page (#15)', async () => {
+    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [], truncated: true });
+    const ctx = createMockContext({ errors: osvQueryPackage.errors });
+    const input = osvQueryPackage.input.parse({
+      name: 'Kernel',
+      ecosystem: 'Linux',
+      version: '5.10.0',
+    });
+    const result = await osvQueryPackage.handler(input, ctx);
+
+    expect(result.truncated).toBe(true);
+    // The enrichment notice must NOT claim "no known vulnerabilities".
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toContain('INCOMPLETE');
+    expect(enrichment.notice).not.toContain('No known vulnerabilities');
+
+    // content[] must not render the false-clean line.
+    const blocks = osvQueryPackage.format!(result);
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).not.toContain('No known vulnerabilities found');
+    expect(text).toContain('truncated');
+  });
+
+  it('formats a truncated non-empty result with a truncation warning (#15)', () => {
+    const output = {
+      vulns: [
+        {
+          id: 'GHSA-x',
+          summary: 'x',
+          aliases: [],
+          severity: [],
+          severityLabel: null,
+          fixedVersions: [],
+          affectedRanges: [],
+          cweIds: [],
+          published: '2024-01-01T00:00:00Z',
+          modified: '2024-01-02T00:00:00Z',
+        },
+      ],
+      truncated: true,
+      queryMeta: { package: 'Kernel', ecosystem: 'Linux', version: '5.10.0', vulnCount: 1 },
+    };
+    const blocks = osvQueryPackage.format!(output);
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('Results truncated');
   });
 });

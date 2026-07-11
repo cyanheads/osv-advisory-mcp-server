@@ -11,9 +11,11 @@ import type {
   BatchVulnBrief,
   OsvAffectedRange,
   OsvApiError,
+  OsvRangeEvent,
   OsvSeverityEntry,
   OsvVulnerability,
   RawOsvAffected,
+  RawOsvEvent,
   RawOsvQueryResponse,
   RawOsvVulnerability,
 } from './types.js';
@@ -26,6 +28,15 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 /** Default maximum concurrent per-package queries in {@link OsvApiService.queryBatch}. */
 const DEFAULT_BATCH_CONCURRENCY = 10;
 
+/**
+ * Default cap on OSV result pages {@link OsvApiService.queryPackage} will follow
+ * before marking a result truncated. OSV paginates above 1,000 results or when
+ * query processing exceeds ~20s, and may return a bare `next_page_token` with no
+ * vulns; the cap bounds total work per logical query (the per-attempt HTTP
+ * timeout is not cumulative). A remaining token at the cap surfaces as truncated.
+ */
+const DEFAULT_MAX_QUERY_PAGES = 10;
+
 /** Maximum backoff retries on 5xx. */
 const MAX_RETRIES = 3;
 
@@ -36,16 +47,36 @@ const BASE_DELAY_MS = 500;
 // Normalization helpers
 // ---------------------------------------------------------------------------
 
-/** Extract all flat affected ranges from an affected array.
- * Skips entries that lack package metadata (e.g. GIT-range-only CVE records). */
+/**
+ * Convert a raw OSV event array into ordered {@link OsvRangeEvent} tuples. Each
+ * raw event object carries exactly one boundary key; iteration order is preserved
+ * so multiple introduced/fixed intervals survive instead of collapsing to one.
+ */
+function extractEvents(events: RawOsvEvent[] | undefined): OsvRangeEvent[] {
+  const out: OsvRangeEvent[] = [];
+  for (const evt of events ?? []) {
+    if (evt.introduced !== undefined) out.push({ type: 'introduced', value: evt.introduced });
+    else if (evt.fixed !== undefined) out.push({ type: 'fixed', value: evt.fixed });
+    else if (evt.last_affected !== undefined)
+      out.push({ type: 'last_affected', value: evt.last_affected });
+    else if (evt.limit !== undefined) out.push({ type: 'limit', value: evt.limit });
+  }
+  return out;
+}
+
+/**
+ * Extract all flat affected ranges from an affected array. Package-less entries
+ * (e.g. GIT-range-only CVE records) are surfaced with empty packageName/ecosystem
+ * rather than dropped, so no affected source range is silently lost. Each range
+ * carries the ordered `events` array, the GIT `repo`, and the parent entry's
+ * explicit `versions` alongside the collapsed introduced/fixed/lastAffected view.
+ */
 function extractAffectedRanges(affected: RawOsvAffected[] | undefined): OsvAffectedRange[] {
   const out: OsvAffectedRange[] = [];
   for (const entry of affected ?? []) {
     const pkgName = entry.package?.name ?? '';
     const ecosystem = entry.package?.ecosystem ?? '';
-    // Skip entries with no package identity — these are GIT-range-only CVE records
-    // that carry no useful package/ecosystem information for dependency audits.
-    if (!pkgName && !ecosystem) continue;
+    const versions = entry.versions ?? [];
     for (const range of entry.ranges ?? []) {
       const rangeType = range.type ?? '';
       let introduced: string | undefined;
@@ -56,10 +87,17 @@ function extractAffectedRanges(affected: RawOsvAffected[] | undefined): OsvAffec
         if (evt.fixed !== undefined) fixed = evt.fixed;
         if (evt.last_affected !== undefined) lastAffected = evt.last_affected;
       }
-      const rangeEntry: OsvAffectedRange = { packageName: pkgName, ecosystem, rangeType };
+      const rangeEntry: OsvAffectedRange = {
+        packageName: pkgName,
+        ecosystem,
+        rangeType,
+        events: extractEvents(range.events),
+        versions,
+      };
       if (introduced !== undefined) rangeEntry.introduced = introduced;
       if (fixed !== undefined) rangeEntry.fixed = fixed;
       if (lastAffected !== undefined) rangeEntry.lastAffected = lastAffected;
+      if (range.repo !== undefined) rangeEntry.repo = range.repo;
       out.push(rangeEntry);
     }
   }
@@ -94,32 +132,33 @@ function normalizeVuln(raw: RawOsvVulnerability): OsvVulnerability {
     score: s.score,
   }));
 
-  const affected = (raw.affected ?? [])
-    .filter((a) => {
-      // Skip GIT-range-only entries that have no package identity (CVE records often have these).
-      const name = a.package?.name ?? '';
-      const eco = a.package?.ecosystem ?? '';
-      return name !== '' || eco !== '';
-    })
-    .map((a) => ({
-      packageName: a.package?.name ?? '',
-      ecosystem: a.package?.ecosystem ?? '',
-      ...(a.package?.purl ? { purl: a.package.purl } : {}),
-      ranges: (a.ranges ?? []).map((r) => {
-        const out: {
-          rangeType: string;
-          introduced?: string;
-          fixed?: string;
-          lastAffected?: string;
-        } = { rangeType: r.type ?? '' };
-        for (const evt of r.events ?? []) {
-          if (evt.introduced !== undefined) out.introduced = evt.introduced;
-          if (evt.fixed !== undefined) out.fixed = evt.fixed;
-          if (evt.last_affected !== undefined) out.lastAffected = evt.last_affected;
-        }
-        return out;
-      }),
-    }));
+  // Package-less entries (GIT-range-only CVE records) are surfaced with empty
+  // packageName/ecosystem — they carry the only affected source range and must
+  // not be dropped. Each range keeps the ordered events, GIT repo, and explicit
+  // versions in addition to the collapsed introduced/fixed/lastAffected scalars.
+  const affected = (raw.affected ?? []).map((a) => ({
+    packageName: a.package?.name ?? '',
+    ecosystem: a.package?.ecosystem ?? '',
+    ...(a.package?.purl ? { purl: a.package.purl } : {}),
+    versions: a.versions ?? [],
+    ranges: (a.ranges ?? []).map((r) => {
+      const out: {
+        rangeType: string;
+        introduced?: string;
+        fixed?: string;
+        lastAffected?: string;
+        repo?: string;
+        events?: OsvRangeEvent[];
+      } = { rangeType: r.type ?? '', events: extractEvents(r.events) };
+      for (const evt of r.events ?? []) {
+        if (evt.introduced !== undefined) out.introduced = evt.introduced;
+        if (evt.fixed !== undefined) out.fixed = evt.fixed;
+        if (evt.last_affected !== undefined) out.lastAffected = evt.last_affected;
+      }
+      if (r.repo !== undefined) out.repo = r.repo;
+      return out;
+    }),
+  }));
 
   const references = (raw.references ?? []).map((ref) => ({
     type: ref.type ?? '',
@@ -141,6 +180,7 @@ function normalizeVuln(raw: RawOsvVulnerability): OsvVulnerability {
     schemaVersion: raw.schema_version ?? '',
     affectedRanges,
     fixedVersions,
+    ...(raw.withdrawn ? { withdrawn: raw.withdrawn } : {}),
   };
 }
 
@@ -284,6 +324,8 @@ async function getJson<T>(
 export interface OsvApiServiceOptions {
   /** Maximum concurrent per-package queries in {@link OsvApiService.queryBatch}. Defaults to {@link DEFAULT_BATCH_CONCURRENCY}. */
   batchConcurrency?: number;
+  /** Maximum OSV result pages followed per logical query in {@link OsvApiService.queryPackage}. Defaults to {@link DEFAULT_MAX_QUERY_PAGES}. */
+  maxQueryPages?: number;
   /** HTTP request timeout in milliseconds. Defaults to {@link DEFAULT_TIMEOUT_MS}. */
   timeoutMs?: number;
 }
@@ -291,10 +333,12 @@ export interface OsvApiServiceOptions {
 export class OsvApiService {
   private readonly timeoutMs: number;
   private readonly batchConcurrency: number;
+  private readonly maxQueryPages: number;
 
   constructor(options: OsvApiServiceOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.batchConcurrency = options.batchConcurrency ?? DEFAULT_BATCH_CONCURRENCY;
+    this.maxQueryPages = options.maxQueryPages ?? DEFAULT_MAX_QUERY_PAGES;
   }
 
   /**
@@ -307,29 +351,58 @@ export class OsvApiService {
     ecosystem: string,
     version: string,
     ctx: Context,
-  ): Promise<{ vulns: OsvVulnerability[]; invalid: false } | { invalid: true; message: string }> {
-    const { status, data } = await postJson<RawOsvQueryResponse>(
-      '/v1/query',
-      { version, package: { name, ecosystem } },
-      this.timeoutMs,
-      ctx,
-    );
+  ): Promise<
+    | { vulns: OsvVulnerability[]; invalid: false; truncated: boolean }
+    | { invalid: true; message: string }
+  > {
+    const vulns: OsvVulnerability[] = [];
+    let pageToken: string | undefined;
 
-    if (status === 400) {
-      const err = data as OsvApiError;
-      return { invalid: true, message: err.message ?? 'Invalid ecosystem.' };
+    // Follow OSV's next_page_token across pages, accumulating vulns, until the
+    // token disappears (result complete) or the page cap is reached. OSV may
+    // return a bare token with no vulns on a page, so an empty first page is
+    // never assumed clean — a pending token at the cap surfaces as truncated.
+    for (let page = 0; page < this.maxQueryPages; page++) {
+      const body: {
+        version: string;
+        package: { name: string; ecosystem: string };
+        page_token?: string;
+      } = { version, package: { name, ecosystem } };
+      if (pageToken) body.page_token = pageToken;
+
+      const { status, data } = await postJson<RawOsvQueryResponse>(
+        '/v1/query',
+        body,
+        this.timeoutMs,
+        ctx,
+      );
+
+      if (status === 400) {
+        const err = data as OsvApiError;
+        return { invalid: true, message: err.message ?? 'Invalid ecosystem.' };
+      }
+      if (status !== 200) {
+        throw serviceUnavailable(`OSV API returned HTTP ${status}.`, { status });
+      }
+
+      const raw = data as RawOsvQueryResponse;
+      // Empty object `{}` means no vulns on this page — treat missing `vulns` as empty.
+      for (const v of raw.vulns ?? []) vulns.push(normalizeVuln(v));
+      pageToken = raw.next_page_token || undefined;
+      if (!pageToken) break;
     }
 
-    if (status !== 200) {
-      throw serviceUnavailable(`OSV API returned HTTP ${status}.`, { status });
-    }
+    // A token still in hand means OSV had more pages than the cap allowed.
+    const truncated = pageToken !== undefined;
 
-    const raw = data as RawOsvQueryResponse;
-    // Empty object `{}` means no vulns — treat missing `vulns` as empty array
-    const vulns = (raw.vulns ?? []).map(normalizeVuln);
-
-    ctx.log.debug('OSV query result', { name, ecosystem, version, vulnCount: vulns.length });
-    return { invalid: false, vulns };
+    ctx.log.debug('OSV query result', {
+      name,
+      ecosystem,
+      version,
+      vulnCount: vulns.length,
+      truncated,
+    });
+    return { invalid: false, vulns, truncated };
   }
 
   /**
@@ -373,6 +446,7 @@ export class OsvApiService {
       version: string;
       vulns: BatchVulnBrief[];
       error: string | null;
+      truncated: boolean;
     }>
   > {
     // Bounded concurrency: drain packages through a worker pool of at most
@@ -412,6 +486,7 @@ export class OsvApiService {
           version: pkg.version,
           vulns: [],
           error: (settled.reason as Error).message ?? 'Unknown error',
+          truncated: false,
         };
       }
       const result = settled.value;
@@ -422,6 +497,7 @@ export class OsvApiService {
           version: pkg.version,
           vulns: [],
           error: result.message,
+          truncated: false,
         };
       }
       return {
@@ -430,6 +506,7 @@ export class OsvApiService {
         version: pkg.version,
         vulns: result.vulns.map(toBrief),
         error: null,
+        truncated: result.truncated,
       };
     });
   }
@@ -452,4 +529,4 @@ export function getOsvApiService(): OsvApiService {
   return _service;
 }
 
-export type { BatchVulnBrief, OsvAffectedRange, OsvVulnerability };
+export type { BatchVulnBrief, OsvAffectedRange, OsvRangeEvent, OsvVulnerability };

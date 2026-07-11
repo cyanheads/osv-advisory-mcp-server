@@ -1,17 +1,19 @@
 /**
- * @fileoverview Tests for server-config — validation of OSV_REQUEST_TIMEOUT_MS and
- * OSV_BATCH_CONCURRENCY through parseEnvConfig. Each case re-imports the module so
- * the lazy `_config` cache resets and the freshly-stubbed env is parsed.
+ * @fileoverview Tests for server-config — validation of OSV_REQUEST_TIMEOUT_MS,
+ * OSV_BATCH_CONCURRENCY, and OSV_QUERY_MAX_PAGES through parseEnvConfig. Each case
+ * re-imports the module so the lazy `_config` cache resets and the freshly-stubbed
+ * env is parsed.
  * @module tests/config/server-config.test
  */
 
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-/** Stub both server env vars, reset the module cache, then resolve fresh config. */
-async function loadConfig(env: { timeout?: string; concurrency?: string }) {
+/** Stub the server env vars, reset the module cache, then resolve fresh config. */
+async function loadConfig(env: { timeout?: string; concurrency?: string; maxPages?: string }) {
   vi.stubEnv('OSV_REQUEST_TIMEOUT_MS', env.timeout);
   vi.stubEnv('OSV_BATCH_CONCURRENCY', env.concurrency);
+  vi.stubEnv('OSV_QUERY_MAX_PAGES', env.maxPages);
   vi.resetModules();
   const mod = await import('@/config/server-config.js');
   return mod.getServerConfig();
@@ -22,16 +24,18 @@ describe('getServerConfig', () => {
     vi.unstubAllEnvs();
   });
 
-  it('applies defaults when both env vars are omitted', async () => {
+  it('applies defaults when the env vars are omitted', async () => {
     const config = await loadConfig({});
     expect(config.requestTimeoutMs).toBe(10000);
     expect(config.batchConcurrency).toBe(10);
+    expect(config.maxQueryPages).toBe(10);
   });
 
   it('parses valid values', async () => {
-    const config = await loadConfig({ timeout: '5000', concurrency: '4' });
+    const config = await loadConfig({ timeout: '5000', concurrency: '4', maxPages: '3' });
     expect(config.requestTimeoutMs).toBe(5000);
     expect(config.batchConcurrency).toBe(4);
+    expect(config.maxQueryPages).toBe(3);
   });
 
   describe('OSV_REQUEST_TIMEOUT_MS validation', () => {
@@ -53,6 +57,18 @@ describe('getServerConfig', () => {
         expect(err).toBeInstanceOf(McpError);
         expect((err as McpError).code).toBe(JsonRpcErrorCode.ConfigurationError);
         expect((err as McpError).message).toContain('OSV_BATCH_CONCURRENCY');
+      });
+    }
+  });
+
+  describe('OSV_QUERY_MAX_PAGES validation', () => {
+    // Non-numeric, zero, negative, and non-integer values are all rejected.
+    for (const bad of ['abc', '0', '-1', '2.5']) {
+      it(`throws a ConfigurationError naming the var for ${JSON.stringify(bad)}`, async () => {
+        const err = await loadConfig({ maxPages: bad }).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(McpError);
+        expect((err as McpError).code).toBe(JsonRpcErrorCode.ConfigurationError);
+        expect((err as McpError).message).toContain('OSV_QUERY_MAX_PAGES');
       });
     }
   });
