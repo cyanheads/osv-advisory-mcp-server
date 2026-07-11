@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.11](changelog/0.1.x/0.1.11.md) — 2026-07-11
+
+osv_get_vulnerability and osv_query_package no longer drop package-less GIT ranges or collapse multi-interval events; osv_get_vulnerability exposes withdrawn-advisory status; osv_query_package now follows OSV pagination and discloses truncation instead of returning false-clean results
+
 ## [0.1.10](changelog/0.1.x/0.1.10.md) — 2026-07-11 · 🛡️ Security
 
 osv_query_package and osv_query_batch gain enrichment (empty-case notice + effective-query echo); batch error rows include the queried version; advisory summaries are framed behind <advisory_summary> boundaries as untrusted-data hardening; adopts @cyanheads/mcp-ts-core ^0.10.14
