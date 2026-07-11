@@ -118,6 +118,21 @@ export const osvQueryBatch = tool('osv_query_batch', {
       .describe('Aggregate statistics across the full batch.'),
   }),
 
+  enrichment: {
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Present on all-clean or all-errors batches — the aggregate outcome for content-only clients.',
+      ),
+    effectiveQuery: z
+      .string()
+      .optional()
+      .describe(
+        'Compact scan summary (package and outcome counts), echoed on edge-case batches for content-only clients.',
+      ),
+  },
+
   async handler(input, ctx) {
     ctx.log.info('OSV batch query', { packageCount: input.packages.length });
 
@@ -158,6 +173,19 @@ export const osvQueryBatch = tool('osv_query_batch', {
       totalVulns,
     });
 
+    const allClean = vulnerableCount === 0 && errorCount === 0;
+    const allErrors = errorCount === results.length;
+    if (allClean || allErrors) {
+      ctx.enrich.notice(
+        allClean
+          ? `All ${results.length} package(s) clean — no known vulnerabilities.`
+          : `All ${results.length} package(s) errored — none could be checked.`,
+      );
+      ctx.enrich.echo(
+        `${summary.totalPackages} package(s): ${vulnerableCount} vulnerable, ${cleanCount} clean, ${errorCount} error(s)`,
+      );
+    }
+
     return { results, summary };
   },
 
@@ -189,7 +217,10 @@ export const osvQueryBatch = tool('osv_query_batch', {
           const sev = vuln.severityLabel ? ` [${vuln.severityLabel}]` : '';
           const fix =
             vuln.fixedVersions.length > 0 ? ` → fix: ${vuln.fixedVersions.join(', ')}` : '';
-          lines.push(`- \`${vuln.id}\`${sev}${aliases}: ${vuln.summary}${fix}`);
+          lines.push(`- \`${vuln.id}\`${sev}${aliases}${fix}`);
+          if (vuln.summary) {
+            lines.push(`  <advisory_summary>${vuln.summary}</advisory_summary>`);
+          }
         }
         lines.push('');
       }
@@ -207,7 +238,7 @@ export const osvQueryBatch = tool('osv_query_batch', {
     if (errors.length > 0) {
       lines.push('\n## Errors\n');
       for (const pkg of errors) {
-        lines.push(`- \`${pkg.name}\` (${pkg.ecosystem}): ${pkg.error}`);
+        lines.push(`- \`${pkg.name}\` @ \`${pkg.version}\` (${pkg.ecosystem}): ${pkg.error}`);
       }
     }
 

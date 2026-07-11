@@ -3,7 +3,7 @@
  * @module tests/tools/osv-query-batch.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { osvQueryBatch } from '@/mcp-server/tools/definitions/osv-query-batch.tool.js';
 import * as osvApiModule from '@/services/osv-api/osv-api-service.js';
@@ -297,6 +297,8 @@ describe('osvQueryBatch', () => {
     expect(text).toContain('CVE-2020-28500');
     expect(text).toContain('4.17.21');
     expect(text).toContain('GHSA-29mw-wpgm-hmr9');
+    // #11: the per-vuln summary sits in its own untrusted-data boundary block.
+    expect(text).toContain('<advisory_summary>Prototype Pollution</advisory_summary>');
   });
 
   it('renders clean packages in content[] (parity with structuredContent)', () => {
@@ -326,5 +328,102 @@ describe('osvQueryBatch', () => {
     expect(text).toContain('express');
     expect(text).toContain('4.18.0');
     expect(text).toContain('Clean Packages');
+  });
+
+  it('renders the input version on error rows (parity with structuredContent)', () => {
+    // #5: structuredContent.results[i] carries the input version; content[] must too,
+    // so text-only clients can identify the exact failed dependency tuple.
+    const output = {
+      results: [
+        {
+          name: 'requests',
+          ecosystem: 'pypi',
+          version: '2.31.0',
+          vulnerable: false,
+          error: 'Invalid ecosystem.',
+          vulnCount: 0,
+          vulns: [],
+        },
+      ],
+      summary: {
+        totalPackages: 1,
+        vulnerableCount: 0,
+        cleanCount: 0,
+        errorCount: 1,
+        totalVulns: 0,
+        worstSeverity: null,
+      },
+    };
+    const blocks = osvQueryBatch.format!(output);
+    const text = (blocks[0] as { text: string }).text;
+    expect(text).toContain('## Errors');
+    expect(text).toContain('requests');
+    expect(text).toContain('2.31.0');
+    expect(text).toContain('Invalid ecosystem.');
+    // The full failed tuple — name @ version (ecosystem) — is on the error line.
+    expect(text).toContain('`requests` @ `2.31.0` (pypi): Invalid ecosystem.');
+  });
+
+  it('enriches all-clean batches with a notice and summary echo', async () => {
+    mockService.queryBatch.mockResolvedValue([
+      makeResult('is-number', 'npm', '7.0.0'),
+      makeResult('express', 'npm', '4.18.0'),
+    ]);
+    const ctx = createMockContext();
+    const input = osvQueryBatch.input.parse({
+      packages: [
+        { name: 'is-number', ecosystem: 'npm', version: '7.0.0' },
+        { name: 'express', ecosystem: 'npm', version: '4.18.0' },
+      ],
+    });
+    await osvQueryBatch.handler(input, ctx);
+
+    // #9: all-clean edge case gets a machine-readable notice + compact scan echo.
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toBe('All 2 package(s) clean — no known vulnerabilities.');
+    expect(enrichment.effectiveQuery).toBe('2 package(s): 0 vulnerable, 2 clean, 0 error(s)');
+  });
+
+  it('enriches all-errors batches with a notice and summary echo', async () => {
+    mockService.queryBatch.mockResolvedValue([
+      makeResult('requests', 'pypi', '2.31.0', [], 'Invalid ecosystem.'),
+    ]);
+    const ctx = createMockContext();
+    const input = osvQueryBatch.input.parse({
+      packages: [{ name: 'requests', ecosystem: 'pypi', version: '2.31.0' }],
+    });
+    await osvQueryBatch.handler(input, ctx);
+
+    // #9: all-errors edge case (errorCount === totalPackages).
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toBe('All 1 package(s) errored — none could be checked.');
+    expect(enrichment.effectiveQuery).toBe('1 package(s): 0 vulnerable, 0 clean, 1 error(s)');
+  });
+
+  it('does not enrich mixed batches (some vulnerable, some clean)', async () => {
+    mockService.queryBatch.mockResolvedValue([
+      makeResult('lodash', 'npm', '4.17.1', [
+        {
+          id: 'GHSA-29mw-wpgm-hmr9',
+          summary: 'Prototype Pollution',
+          aliases: ['CVE-2020-28500'],
+          severityLabel: 'HIGH',
+          fixedVersions: ['4.17.21'],
+        },
+      ]),
+      makeResult('express', 'npm', '4.18.0'),
+    ]);
+    const ctx = createMockContext();
+    const input = osvQueryBatch.input.parse({
+      packages: [
+        { name: 'lodash', ecosystem: 'npm', version: '4.17.1' },
+        { name: 'express', ecosystem: 'npm', version: '4.18.0' },
+      ],
+    });
+    await osvQueryBatch.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toBeUndefined();
+    expect(enrichment.effectiveQuery).toBeUndefined();
   });
 });

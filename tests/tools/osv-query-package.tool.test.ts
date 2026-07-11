@@ -3,7 +3,7 @@
  * @module tests/tools/osv-query-package.tool.test
  */
 
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { osvQueryPackage } from '@/mcp-server/tools/definitions/osv-query-package.tool.js';
 import type { OsvVulnerability } from '@/services/osv-api/osv-api-service.js';
@@ -164,6 +164,8 @@ describe('osvQueryPackage', () => {
     expect(text).toContain('4.17.21');
     expect(text).toContain('MODERATE');
     expect(text).toContain('CWE-1333');
+    // #11: upstream summary text is framed behind an untrusted-data boundary.
+    expect(text).toContain('<advisory_summary>\nPrototype Pollution\n</advisory_summary>');
   });
 
   it('formats clean package output with no vulnerabilities message', () => {
@@ -263,5 +265,61 @@ describe('osvQueryPackage', () => {
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('No fix available');
     expect(text).toContain('last_affected: 1.2.3');
+  });
+
+  it('omits the summary boundary when a vuln summary is empty', () => {
+    const output = {
+      vulns: [
+        {
+          id: 'GHSA-empty-summary',
+          summary: '',
+          aliases: [],
+          severity: [],
+          severityLabel: null,
+          fixedVersions: [],
+          affectedRanges: [],
+          cweIds: [],
+          published: '2024-01-01T00:00:00Z',
+          modified: '2024-01-02T00:00:00Z',
+        },
+      ],
+      queryMeta: { package: 'pkg', ecosystem: 'npm', version: '1.0.0', vulnCount: 1 },
+    };
+    const blocks = osvQueryPackage.format!(output);
+    const text = (blocks[0] as { text: string }).text;
+    // #11: empty summary must not emit an empty <advisory_summary></advisory_summary> block.
+    expect(text).not.toContain('<advisory_summary>');
+    expect(text).not.toContain('**Summary:**');
+  });
+
+  it('enriches the clean path with a no-vulns notice and an effective-query echo', async () => {
+    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [] });
+    const ctx = createMockContext({ errors: osvQueryPackage.errors });
+    const input = osvQueryPackage.input.parse({
+      name: 'is-number',
+      ecosystem: 'npm',
+      version: '7.0.0',
+    });
+    await osvQueryPackage.handler(input, ctx);
+
+    // #9: machine-readable "is this clean?" + "what did I query?" signals.
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toBe('No known vulnerabilities for is-number@7.0.0 (npm).');
+    expect(enrichment.effectiveQuery).toBe('is-number@7.0.0 (npm)');
+  });
+
+  it('does not enrich when vulnerabilities are found', async () => {
+    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [SAMPLE_VULN] });
+    const ctx = createMockContext({ errors: osvQueryPackage.errors });
+    const input = osvQueryPackage.input.parse({
+      name: 'lodash',
+      ecosystem: 'npm',
+      version: '4.17.1',
+    });
+    await osvQueryPackage.handler(input, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toBeUndefined();
+    expect(enrichment.effectiveQuery).toBeUndefined();
   });
 });

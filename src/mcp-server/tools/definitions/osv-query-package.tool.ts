@@ -111,6 +111,21 @@ export const osvQueryPackage = tool('osv_query_package', {
       .describe('Query parameters as submitted.'),
   }),
 
+  enrichment: {
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Present on the clean path — confirms no known vulnerabilities for the queried package.',
+      ),
+    effectiveQuery: z
+      .string()
+      .optional()
+      .describe(
+        'The package@version (ecosystem) tuple as queried, echoed for content-only clients.',
+      ),
+  },
+
   errors: [
     {
       reason: 'invalid_ecosystem',
@@ -139,6 +154,13 @@ export const osvQueryPackage = tool('osv_query_package', {
     }
 
     ctx.log.info('OSV query complete', { vulnCount: result.vulns.length });
+
+    if (result.vulns.length === 0) {
+      ctx.enrich.notice(
+        `No known vulnerabilities for ${input.name}@${input.version} (${input.ecosystem}).`,
+      );
+      ctx.enrich.echo(`${input.name}@${input.version} (${input.ecosystem})`);
+    }
 
     return {
       vulns: result.vulns.map((v) => ({
@@ -187,7 +209,9 @@ export const osvQueryPackage = tool('osv_query_package', {
           lines.push(`- ${s.type}: \`${s.score}\``);
         }
       }
-      lines.push(`**Summary:** ${vuln.summary}`);
+      if (vuln.summary) {
+        lines.push(`**Summary:**\n<advisory_summary>\n${vuln.summary}\n</advisory_summary>`);
+      }
       if (vuln.fixedVersions.length > 0) {
         lines.push(`**Fix:** Upgrade to ${vuln.fixedVersions.join(', ')}`);
       } else {
