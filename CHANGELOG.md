@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.12](changelog/0.1.x/0.1.12.md) — 2026-07-11
+
+osv_list_ecosystems now returns the canonical 50-identifier OSV set (was a stale 26-entry list including the invalid GSD prefix); osv_query_package, osv_query_batch, and osv_get_vulnerability reject blank/whitespace-only name, ecosystem, version, and id fields at the schema
+
 ## [0.1.11](changelog/0.1.x/0.1.11.md) — 2026-07-11
 
 osv_get_vulnerability and osv_query_package no longer drop package-less GIT ranges or collapse multi-interval events; osv_get_vulnerability exposes withdrawn-advisory status; osv_query_package now follows OSV pagination and discloses truncation instead of returning false-clean results
