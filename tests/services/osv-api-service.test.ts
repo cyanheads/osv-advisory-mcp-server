@@ -54,16 +54,21 @@ const VULN_NOT_FOUND_RESPONSE = { code: 5, message: 'Bug not found.' };
 // Fetch mock helper
 // ---------------------------------------------------------------------------
 
-function mockFetch(responses: Array<{ status: number; body: unknown }>) {
+function jsonResponse(status: number, body: unknown, headers?: Record<string, string>): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...headers },
+  });
+}
+
+function mockFetch(
+  responses: Array<{ status: number; body: unknown; headers?: Record<string, string> }>,
+) {
   let callIndex = 0;
   return vi.fn().mockImplementation(() => {
     const res = responses[callIndex++];
     if (!res) throw new Error('Unexpected fetch call');
-    return Promise.resolve({
-      ok: res.status >= 200 && res.status < 300,
-      status: res.status,
-      text: () => Promise.resolve(JSON.stringify(res.body)),
-    });
+    return Promise.resolve(jsonResponse(res.status, res.body, res.headers));
   });
 }
 
@@ -103,13 +108,15 @@ describe('OsvApiService', () => {
     });
 
     it('returns invalid: true for HTTP 400 (invalid ecosystem)', async () => {
-      vi.stubGlobal('fetch', mockFetch([{ status: 400, body: INVALID_ECOSYSTEM_RESPONSE }]));
+      const fetch = mockFetch([{ status: 400, body: INVALID_ECOSYSTEM_RESPONSE }]);
+      vi.stubGlobal('fetch', fetch);
       const ctx = createMockContext();
       const result = await service.queryPackage('lodash', 'NPM', '4.17.1', ctx);
 
       expect(result.invalid).toBe(true);
       if (!result.invalid) return;
       expect(result.message).toBe('Invalid ecosystem.');
+      expect(fetch).toHaveBeenCalledTimes(1);
     });
 
     it('extracts affected ranges correctly', async () => {
@@ -138,10 +145,51 @@ describe('OsvApiService', () => {
     });
 
     it('returns null for HTTP 404 (vuln not found)', async () => {
-      vi.stubGlobal('fetch', mockFetch([{ status: 404, body: VULN_NOT_FOUND_RESPONSE }]));
+      const fetch = mockFetch([{ status: 404, body: VULN_NOT_FOUND_RESPONSE }]);
+      vi.stubGlobal('fetch', fetch);
       const ctx = createMockContext();
       const result = await service.getVulnerability('GHSA-xxxx-xxxx-xxxx', ctx);
       expect(result).toBeNull();
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('framework HTTP handling', () => {
+    it('retries transient OSV failures for three total attempts and preserves Retry-After', async () => {
+      const fetch = mockFetch([
+        { status: 503, body: { error: 'temporary outage' }, headers: { 'Retry-After': '0' } },
+        { status: 503, body: { error: 'temporary outage' }, headers: { 'Retry-After': '0' } },
+        { status: 503, body: { error: 'temporary outage' }, headers: { 'Retry-After': '0' } },
+      ]);
+      vi.stubGlobal('fetch', fetch);
+
+      await expect(
+        service.queryPackage('lodash', 'npm', '4.17.1', createMockContext()),
+      ).rejects.toMatchObject({
+        data: expect.objectContaining({ retryAfter: '0', retryAttempts: 3, status: 503 }),
+      });
+      expect(fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('stops immediately when the caller cancels instead of retrying', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const fetch = vi
+        .fn()
+        .mockImplementation(() =>
+          Promise.reject(new DOMException('The operation was aborted.', 'AbortError')),
+        );
+      vi.stubGlobal('fetch', fetch);
+
+      await expect(
+        service.queryPackage(
+          'lodash',
+          'npm',
+          '4.17.1',
+          createMockContext({ signal: controller.signal }),
+        ),
+      ).rejects.toThrow();
+      expect(fetch).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -222,14 +270,9 @@ describe('OsvApiService', () => {
           return new Promise((resolve) =>
             setTimeout(
               () =>
-                resolve({
-                  ok: true,
-                  status: 200,
-                  text: () =>
-                    Promise.resolve(
-                      JSON.stringify(vulnerable ? QUERY_RESPONSE_WITH_VULN : EMPTY_QUERY_RESPONSE),
-                    ),
-                }),
+                resolve(
+                  jsonResponse(200, vulnerable ? QUERY_RESPONSE_WITH_VULN : EMPTY_QUERY_RESPONSE),
+                ),
               total - idx,
             ),
           );
@@ -261,11 +304,7 @@ describe('OsvApiService', () => {
           return new Promise((resolve) =>
             setTimeout(() => {
               inFlight--;
-              resolve({
-                ok: true,
-                status: 200,
-                text: () => Promise.resolve(JSON.stringify(EMPTY_QUERY_RESPONSE)),
-              });
+              resolve(jsonResponse(200, EMPTY_QUERY_RESPONSE));
             }, 5),
           );
         }),
@@ -292,11 +331,7 @@ describe('OsvApiService', () => {
           return new Promise((resolve) =>
             setTimeout(() => {
               inFlight--;
-              resolve({
-                ok: true,
-                status: 200,
-                text: () => Promise.resolve(JSON.stringify(EMPTY_QUERY_RESPONSE)),
-              });
+              resolve(jsonResponse(200, EMPTY_QUERY_RESPONSE));
             }, 3),
           );
         }),
@@ -548,12 +583,9 @@ describe('OsvApiService', () => {
         vi.fn().mockImplementation((_url: string, init: RequestInit) => {
           bodies.push(String(init.body));
           const call = bodies.length;
-          return Promise.resolve({
-            ok: true,
-            status: 200,
-            text: () =>
-              Promise.resolve(JSON.stringify(call === 1 ? { next_page_token: 'tok-abc' } : {})),
-          });
+          return Promise.resolve(
+            jsonResponse(200, call === 1 ? { next_page_token: 'tok-abc' } : {}),
+          );
         }),
       );
       const ctx = createMockContext();
@@ -568,13 +600,11 @@ describe('OsvApiService', () => {
       // token still pending, the result is truncated (incomplete), NOT a false clean.
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockImplementation(() =>
-          Promise.resolve({
-            ok: true,
-            status: 200,
-            text: () => Promise.resolve(JSON.stringify({ next_page_token: 'always-more' })),
-          }),
-        ),
+        vi
+          .fn()
+          .mockImplementation(() =>
+            Promise.resolve(jsonResponse(200, { next_page_token: 'always-more' })),
+          ),
       );
       const svc = new OsvApiService({ timeoutMs: 5000, maxQueryPages: 1 });
       const ctx = createMockContext();
@@ -590,11 +620,7 @@ describe('OsvApiService', () => {
         'fetch',
         vi.fn().mockImplementation(() => {
           calls++;
-          return Promise.resolve({
-            ok: true,
-            status: 200,
-            text: () => Promise.resolve(JSON.stringify({ next_page_token: 'more' })),
-          });
+          return Promise.resolve(jsonResponse(200, { next_page_token: 'more' }));
         }),
       );
       const svc = new OsvApiService({ timeoutMs: 5000, maxQueryPages: 3 });
@@ -612,11 +638,7 @@ describe('OsvApiService', () => {
           const name = JSON.parse(String(init.body)).package.name as string;
           // "Kernel" always paginates (never resolves); "express" is clean in one page.
           const body = name === 'Kernel' ? { next_page_token: 'more' } : {};
-          return Promise.resolve({
-            ok: true,
-            status: 200,
-            text: () => Promise.resolve(JSON.stringify(body)),
-          });
+          return Promise.resolve(jsonResponse(200, body));
         }),
       );
       const svc = new OsvApiService({ timeoutMs: 5000, maxQueryPages: 2, batchConcurrency: 2 });

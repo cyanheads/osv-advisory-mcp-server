@@ -164,6 +164,7 @@ describe('osvQueryPackage', () => {
         },
       ],
       queryMeta: { package: 'lodash', ecosystem: 'npm', version: '4.17.1', vulnCount: 1 },
+      truncated: false,
     };
     const blocks = osvQueryPackage.format!(output);
     const text = (blocks[0] as { text: string }).text;
@@ -180,6 +181,7 @@ describe('osvQueryPackage', () => {
     const output = {
       vulns: [],
       queryMeta: { package: 'lodash', ecosystem: 'npm', version: '4.17.21', vulnCount: 0 },
+      truncated: false,
     };
     const blocks = osvQueryPackage.format!(output);
     const text = (blocks[0] as { text: string }).text;
@@ -272,6 +274,7 @@ describe('osvQueryPackage', () => {
         },
       ],
       queryMeta: { package: 'unsafe-lib', ecosystem: 'crates.io', version: '1.2.0', vulnCount: 1 },
+      truncated: false,
     };
     const blocks = osvQueryPackage.format!(output);
     const text = (blocks[0] as { text: string }).text;
@@ -296,6 +299,7 @@ describe('osvQueryPackage', () => {
         },
       ],
       queryMeta: { package: 'pkg', ecosystem: 'npm', version: '1.0.0', vulnCount: 1 },
+      truncated: false,
     };
     const blocks = osvQueryPackage.format!(output);
     const text = (blocks[0] as { text: string }).text;

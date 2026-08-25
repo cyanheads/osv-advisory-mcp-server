@@ -1,12 +1,13 @@
 /**
  * @fileoverview Service wrapping the OSV.dev REST API v1.
- * Handles HTTP fetch, timeout, exponential backoff on 5xx, error body parsing,
- * and normalization of raw API responses to typed domain objects.
+ * Handles HTTP fetch, timeout, retry, error body parsing, and normalization of
+ * raw API responses to typed domain objects.
  * @module services/osv-api/osv-api-service
  */
 
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { serviceUnavailable, timeout } from '@cyanheads/mcp-ts-core/errors';
+import { McpError, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
+import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import type {
   BatchVulnBrief,
   OsvAffectedRange,
@@ -37,8 +38,8 @@ const DEFAULT_BATCH_CONCURRENCY = 10;
  */
 const DEFAULT_MAX_QUERY_PAGES = 10;
 
-/** Maximum backoff retries on 5xx. */
-const MAX_RETRIES = 3;
+/** Maximum retries after the initial request. */
+const MAX_RETRIES = 2;
 
 /** Base delay for exponential backoff. */
 const BASE_DELAY_MS = 500;
@@ -199,121 +200,96 @@ function toBrief(vuln: OsvVulnerability): BatchVulnBrief {
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
-/** Sleep for ms milliseconds. */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** Parse an OSV response body, preserving malformed upstream payloads as typed failures. */
+function parseJson<T>(text: string, url: string): T {
+  try {
+    return JSON.parse(text) as T;
+  } catch (error) {
+    throw serviceUnavailable('OSV API returned malformed JSON.', { url }, { cause: error });
+  }
 }
 
-/**
- * Execute a fetch with a timeout and exponential backoff on 5xx.
- * Throws typed errors for network failures, timeouts, and upstream errors.
- */
-async function fetchWithRetry(
+/** Fetch and parse JSON with framework timeout, cancellation, status, and retry handling. */
+function requestJson<T>(
   url: string,
   init: RequestInit,
+  expectedStatuses: number[],
   timeoutMs: number,
   ctx: Context,
-): Promise<Response> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    if (attempt > 0) {
-      const delay = BASE_DELAY_MS * 2 ** (attempt - 1);
-      await sleep(delay);
-    }
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const onAbort = () => controller.abort();
-    ctx.signal.addEventListener('abort', onAbort, { once: true });
-
-    let response: Response;
-    try {
-      response = await fetch(url, { ...init, signal: controller.signal });
-    } catch (err) {
-      clearTimeout(timer);
-      ctx.signal.removeEventListener('abort', onAbort);
-      if ((err as Error).name === 'AbortError') {
-        if (ctx.signal.aborted) throw timeout('OSV request cancelled by caller.');
-        throw timeout(`OSV request timed out after ${timeoutMs}ms.`);
+): Promise<{ status: number; data: T | OsvApiError }> {
+  return withRetry(
+    async () => {
+      try {
+        const response = await fetchWithTimeout(url, timeoutMs, ctx, {
+          ...init,
+          expectedStatuses,
+          signal: ctx.signal,
+        });
+        return {
+          status: response.status,
+          data: parseJson<T>(await response.text(), url),
+        };
+      } catch (error) {
+        if (!(error instanceof McpError)) throw error;
+        const status = error.data?.status;
+        if (
+          typeof status !== 'number' ||
+          !expectedStatuses.includes(status) ||
+          typeof error.data?.body !== 'string'
+        ) {
+          throw error;
+        }
+        return {
+          status,
+          data: parseJson<OsvApiError>(error.data.body, url),
+        };
       }
-      throw serviceUnavailable(
-        `OSV API network error: ${(err as Error).message}`,
-        { url },
-        { cause: err as Error },
-      );
-    } finally {
-      clearTimeout(timer);
-      ctx.signal.removeEventListener('abort', onAbort);
-    }
-
-    // 5xx → retry with backoff
-    if (response.status >= 500 && response.status < 600) {
-      lastErr = new Error(`OSV API returned HTTP ${response.status}`);
-      continue;
-    }
-
-    return response;
-  }
-
-  throw serviceUnavailable(
-    `OSV API failed after ${MAX_RETRIES} attempts: ${(lastErr as Error).message}`,
-    { url },
+    },
+    {
+      operation: 'OsvApiService.requestJson',
+      context: ctx,
+      baseDelayMs: BASE_DELAY_MS,
+      maxRetries: MAX_RETRIES,
+      signal: ctx.signal,
+    },
   );
 }
 
 /** POST JSON to an OSV endpoint, parse the response body. */
-async function postJson<T>(
+function postJson<T>(
   path: string,
   body: unknown,
   timeoutMs: number,
   ctx: Context,
 ): Promise<{ status: number; data: T | OsvApiError }> {
   const url = `${OSV_BASE_URL}${path}`;
-  const response = await fetchWithRetry(
+  return requestJson<T>(
     url,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(body),
     },
+    [400],
     timeoutMs,
     ctx,
   );
-
-  const text = await response.text();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw serviceUnavailable('OSV API returned malformed JSON.', { url });
-  }
-
-  return { status: response.status, data: parsed as T | OsvApiError };
 }
 
 /** GET from an OSV endpoint, parse the response body. */
-async function getJson<T>(
+function getJson<T>(
   path: string,
   timeoutMs: number,
   ctx: Context,
 ): Promise<{ status: number; data: T | OsvApiError }> {
   const url = `${OSV_BASE_URL}${path}`;
-  const response = await fetchWithRetry(
+  return requestJson<T>(
     url,
     { method: 'GET', headers: { Accept: 'application/json' } },
+    [404],
     timeoutMs,
     ctx,
   );
-
-  const text = await response.text();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw serviceUnavailable('OSV API returned malformed JSON.', { url });
-  }
-
-  return { status: response.status, data: parsed as T | OsvApiError };
 }
 
 // ---------------------------------------------------------------------------
