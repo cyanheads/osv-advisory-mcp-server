@@ -1,6 +1,6 @@
 {
   "name": "osv-advisory-mcp-server",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Query OSV.dev for package vulnerabilities, batch-audit dependency lists, and fetch full advisory records via MCP. STDIO or Streamable HTTP.",
   "author": {
     "name": "Casey Hand"

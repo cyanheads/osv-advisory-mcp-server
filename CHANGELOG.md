@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.13](changelog/0.1.x/0.1.13.md) — 2026-08-24
+
+MCP 2026 protocol support, explicit stateless HTTP deployment, and framework-managed OSV request resilience
+
 ## [0.1.12](changelog/0.1.x/0.1.12.md) — 2026-07-11
 
 osv_list_ecosystems now returns the canonical 50-identifier OSV set (was a stale 26-entry list including the invalid GSD prefix); osv_query_package, osv_query_batch, and osv_get_vulnerability reject blank/whitespace-only name, ecosystem, version, and id fields at the schema

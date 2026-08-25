@@ -1,10 +1,9 @@
 # osv-advisory-mcp-server - Directory Structure
 
-Generated on: 2026-07-11 16:25:02
+Generated on: 2026-08-25 02:52:35
 
 ```text
 osv-advisory-mcp-server/
-├── .claude/
 ├── .claude-plugin/
 │   └── plugin.json
 ├── .codex-plugin/
@@ -15,6 +14,8 @@ osv-advisory-mcp-server/
 │   │   ├── bug_report.yml
 │   │   ├── config.yml
 │   │   └── feature_request.yml
+│   ├── CODE_OF_CONDUCT.md
+│   ├── CONTRIBUTING.md
 │   ├── FUNDING.yml
 │   └── SECURITY.md
 ├── .vscode/

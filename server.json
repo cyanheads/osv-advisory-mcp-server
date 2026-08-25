@@ -6,7 +6,7 @@
     "url": "https://github.com/cyanheads/osv-advisory-mcp-server",
     "source": "github"
   },
-  "version": "0.1.12",
+  "version": "0.1.13",
   "remotes": [
     {
       "type": "streamable-http",
@@ -19,7 +19,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/osv-advisory-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.1.12",
+      "version": "0.1.13",
       "packageArguments": [
         {
           "type": "positional",
@@ -69,7 +69,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/osv-advisory-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.1.12",
+      "version": "0.1.13",
       "packageArguments": [
         {
           "type": "positional",
@@ -129,6 +129,13 @@
           "format": "string",
           "isRequired": false,
           "default": "none"
+        },
+        {
+          "name": "MCP_SESSION_MODE",
+          "description": "HTTP session mode. This server deploys stateless because its tools do not use multi-round input.",
+          "format": "string",
+          "isRequired": false,
+          "default": "stateless"
         },
         {
           "name": "MCP_LOG_LEVEL",
