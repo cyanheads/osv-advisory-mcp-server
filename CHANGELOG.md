@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.14](changelog/0.1.x/0.1.14.md) — 2026-09-20
+
+Framework 0.13.6 adoption — typed argument-rejection errors, discriminated output-schema error shapes, and explicit stateless session mode
+
 ## [0.1.13](changelog/0.1.x/0.1.13.md) — 2026-08-24
 
 MCP 2026 protocol support, explicit stateless HTTP deployment, and framework-managed OSV request resilience
