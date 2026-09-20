@@ -1,13 +1,17 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "osv-advisory-mcp-server",
   "version": "0.1.13",
   "description": "Query OSV.dev for package vulnerabilities, batch-audit dependency lists, and fetch full advisory records via MCP. STDIO or Streamable HTTP.",
   "author": {
-    "name": "Casey Hand"
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
   },
   "homepage": "https://github.com/cyanheads/osv-advisory-mcp-server#readme",
   "repository": "https://github.com/cyanheads/osv-advisory-mcp-server",
   "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "osv", "vulnerability", "security", "sbom"],
   "mcpServers": {
     "osv-advisory-mcp-server": {
       "command": "npx",

@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.13-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/osv-advisory-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/osv-advisory-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/osv-advisory-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun->=1.3.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.13-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/osv-advisory-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/osv-advisory-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/osv-advisory-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0%2B-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -27,9 +27,11 @@
 
 ---
 
-## Tools
+## Overview
 
-4 tools for querying the OSV.dev vulnerability database — single package lookups, batch dependency audits, and full advisory fetch:
+Vulnerability data from OSV.dev, the open-source vulnerability database. Query a single package version, batch-audit a full dependency list or SBOM, and fetch complete advisory records with CVSS severity, CVE aliases, and affected version ranges. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+
+### Tools
 
 | Tool | Description |
 |:---|:---|
@@ -38,65 +40,60 @@
 | `osv_get_vulnerability` | Fetch the full advisory record for a single OSV vulnerability ID |
 | `osv_list_ecosystems` | Return the list of supported ecosystem identifier strings |
 
-### `osv_query_package`
+## Capability reference
 
-The primary "is this package version vulnerable?" tool.
+### `osv_query_package` <sub>tool</sub>
 
-- Accepts `name`, `ecosystem` (case-sensitive exact match — use `osv_list_ecosystems` to validate), and `version`
-- Returns all matching advisories: OSV IDs, CVE aliases, CVSS severity vectors, derived severity label, first safe versions, affected version ranges (SEMVER/ECOSYSTEM/GIT), and CWE IDs
-- `aliases` field surfaces CVE IDs for chaining to `nist-nvd-mcp-server` for CVSS base scores, EPSS exploitation probability, and CISA KEV status
-- No API key required — OSV.dev is fully public and keyless
-
----
-
-### `osv_query_batch`
-
-The primary tool for dependency audits, SBOM scanning, and lockfile triage.
-
-- Accepts an array of `{name, ecosystem, version}` tuples (1–1000 packages per call)
-- Ecosystem strings are validated by OSV.dev itself, not a static allowlist — an unrecognized ecosystem surfaces as that entry's per-package `error` rather than failing the whole batch
-- Returns per-package results positionally matching the input, with `vulnerable`, `vulnCount`, `vulns` (including `aliases` and `severityLabel`), and `fixedVersions`
-- Includes aggregate summary: `totalPackages`, `vulnerableCount`, `cleanCount`, `errorCount`, `totalVulns`, `worstSeverity`
+- Accepts `name`, `ecosystem` (case-sensitive exact match), and `version` — an exact version string, not a range
+- Returns matching advisories with OSV IDs, CVE `aliases`, CVSS severity vectors, `severityLabel`, `fixedVersions`, `affectedRanges` (SEMVER/ECOSYSTEM/GIT), and `cweIds`
+- `truncated: true` means OSV paginated beyond `OSV_QUERY_MAX_PAGES` (default 10) — an empty `vulns` array with `truncated: true` is NOT a confirmed clean result
+- Typed `invalid_ecosystem` error when the ecosystem string isn't recognized by OSV — call `osv_list_ecosystems` for valid values, then retry
+- `aliases` on each vuln chain to `nist-nvd-mcp-server` for CVSS base scores, EPSS exploitation probability, and CISA KEV status
 
 ---
 
-### `osv_get_vulnerability`
+### `osv_query_batch` <sub>tool</sub>
 
-Fetch the complete advisory record by OSV ID.
-
-- Accepts any OSV ID prefix: `GHSA-` (GitHub), `PYSEC-` (Python), `RUSTSEC-` (Rust), `GO-` (Go), `DSA-`/`DLA-` (Debian), `CVE-` (direct CVE fallbacks)
-- Returns: summary, full advisory details text, all CVE aliases, all affected packages and their version ranges, fix versions, CVSS severity vectors, CWE weakness IDs, and references (ADVISORY, FIX, REPORT, etc.)
-- Use after `osv_query_package` or `osv_query_batch` returns a vuln ID and you need the full advisory context — remediation guidance, scope of affected packages, or eligibility criteria
+- Accepts an array of `{name, ecosystem, version}` tuples, 1–1000 per call; `results[i]` corresponds positionally to `packages[i]`
+- Per-package `vulnerable`, `vulnCount`, `vulns` (with `aliases` and `severityLabel`), `fixedVersions`, and a nullable `error` — one bad ecosystem or upstream failure fails only that row, not the whole batch
+- Aggregate `summary`: `totalPackages`, `vulnerableCount`, `cleanCount`, `truncatedCount`, `errorCount`, `totalVulns`, `worstSeverity`
+- `cleanCount` excludes truncated rows — a per-package `truncated: true` result is never counted clean even with zero findings
+- Per-package requests run in parallel, capped by `OSV_BATCH_CONCURRENCY` (default 10)
 
 ---
 
-### `osv_list_ecosystems`
+### `osv_get_vulnerability` <sub>tool</sub>
 
-Return the list of valid ecosystem identifier strings. Ecosystem strings are **case-sensitive exact matches** — `"pypi"` is not `"PyPI"`. Call this tool before querying to validate ecosystem strings from lockfiles or user input. The list is static (sourced from the OSV schema spec) and may occasionally lag newly added ecosystems.
+- Accepts any OSV ID prefix: `GHSA-` (GitHub), `PYSEC-` (Python), `RUSTSEC-` (Rust), `GO-` (Go), `DSA-`/`DLA-` (Debian), `CVE-` (direct fallback lookups)
+- Returns the full record — `details` text, all CVE `aliases`, every affected package and version range, `fixedVersions`, CVSS `severity` vectors, `cweIds`, and `references` (ADVISORY, FIX, REPORT, etc.)
+- Typed `vulnerability_not_found` error when the ID doesn't exist in OSV — a CVE-style alias may still resolve via `nist-nvd-mcp-server`
+- `withdrawn` is present only on retracted advisories — treat as no longer active, not as an error
+
+---
+
+### `osv_list_ecosystems` <sub>tool</sub>
+
+- No input; returns the static list of valid `ecosystem` identifier strings plus an advisory `note` on currency
+- Ecosystem strings are case-sensitive exact matches — `"pypi"` fails where `"PyPI"` succeeds
+- Sourced from the OSV schema's `ecosystemName` enum plus `GIT` (accepted via the `ecosystemWithSuffix` pattern); may lag newly added ecosystems
 
 ## Features
 
-Built on [`@cyanheads/mcp-ts-core`](https://www.npmjs.com/package/@cyanheads/mcp-ts-core):
-
-- Declarative tool definitions — single file per tool, framework handles registration and validation
-- Unified error handling — handlers throw, framework catches, classifies, and formats
-- Pluggable auth: `none`, `jwt`, `oauth`
-- Swappable storage backends: `in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`
-- Structured logging with optional OpenTelemetry tracing
-- STDIO and Streamable HTTP transports
+Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): stdio and Streamable HTTP transports, pluggable auth (`none` / `jwt` / `oauth`), swappable storage (`in-memory`, `filesystem`, `Supabase`, `Cloudflare KV/R2/D1`), structured logging with optional OpenTelemetry tracing.
 
 OSV-specific:
 
 - No API key required — OSV.dev is fully public, keyless, and has no published rate limit
-- Parallel single-package queries in `osv_query_batch` return full records including `aliases` (CVE IDs) that the upstream batch endpoint omits
-- Per-package queries isolate failures — one invalid ecosystem or upstream error surfaces as that row's `error`, leaving the rest of the batch intact
+- `osv_query_batch` issues parallel per-package requests (capped by `OSV_BATCH_CONCURRENCY`) and returns full records, including `aliases`, that the upstream OSV batch endpoint omits
+- Per-package failures are isolated in `osv_query_batch` — one invalid ecosystem or upstream error surfaces as that row's `error` without failing the whole batch
+- Ecosystem validation via `osv_list_ecosystems`, kept in sync with the OSV schema's `ecosystemName` enum
 
 Agent-friendly output:
 
-- `aliases` (CVE IDs) prominently surfaced on every vuln entry — the primary composition point for chaining to `nist-nvd-mcp-server` for CVSS base scores, EPSS, and CISA KEV status
-- `severityLabel` derived from `database_specific.severity` (GHSA records) or the highest CVSS base score; `null` rather than fabricated when neither source is available
-- Echo of query parameters (`queryMeta`) on `osv_query_package` output so agents can verify the request was applied correctly
-- Batch aggregate summary (`worstSeverity`, `vulnerableCount`, `cleanCount`) for quick triage without reading per-package rows
+- `aliases` (CVE IDs) surfaced on every vuln entry — the composition point for chaining to `nist-nvd-mcp-server` for CVSS base scores, EPSS, and CISA KEV status
+- `severityLabel` derived from GHSA `database_specific.severity` or the highest CVSS base score; `null` rather than fabricated when neither source is available
+- Truncation is never silently treated as clean — `truncated` (single query) and per-package `truncated` plus `truncatedCount` (batch) flag incomplete OSV pagination, and truncated rows are excluded from `cleanCount`
+- Query echo (`queryMeta` / `effectiveQuery`) and aggregate batch `summary` (`worstSeverity`, `vulnerableCount`, `cleanCount`) let agents verify requests and triage without reading every row
 
 ## Getting started
 
@@ -180,7 +177,7 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
 
 ### Prerequisites
 
-- [Bun v1.3.0](https://bun.sh/) or higher (or Node.js v24+).
+- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
 - No API key required — OSV.dev is fully public.
 
 ### Installation
@@ -216,12 +213,14 @@ All configuration is validated at startup. No server-specific env vars are requi
 
 | Variable | Description | Default |
 |:---------|:------------|:--------|
-| `OSV_REQUEST_TIMEOUT_MS` | HTTP request timeout in milliseconds for OSV.dev API calls. | `10000` |
+| `OSV_REQUEST_TIMEOUT_MS` | HTTP request timeout for OSV.dev API calls, in milliseconds. | `10000` |
+| `OSV_BATCH_CONCURRENCY` | Maximum concurrent OSV.dev requests issued by `osv_query_batch`. | `10` |
+| `OSV_QUERY_MAX_PAGES` | Maximum OSV.dev result pages `osv_query_package` follows before marking a result truncated. | `10` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | Port for HTTP server. | `3010` |
 | `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path. | `/mcp` |
 | `MCP_PUBLIC_URL` | Public origin override for TLS-terminating reverse-proxy deployments. | none |
-| `MCP_SESSION_MODE` | HTTP session mode: `stateful`, `stateless`, or `auto` (`auto` resolves to stateful). This server explicitly deploys `stateless`; its tools have no multi-round input flow. | `stateless` |
+| `MCP_SESSION_MODE` | HTTP session mode: `stateful`, `stateless`, or `auto`. `createApp()` declares `stateless` — no tool has a multi-round input flow — and setting this overrides it. | `stateless` |
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (RFC 5424). | `info` |
 | `LOGS_DIR` | Directory for log files (Node.js only). | `<project-root>/logs` |
@@ -268,6 +267,7 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 | Directory | Purpose |
 |:----------|:--------|
 | `src/index.ts` | `createApp()` entry point — registers tools and inits services. |
+| `src/config` | Server-specific environment variable parsing and validation with Zod. |
 | `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — `osv_query_package`, `osv_query_batch`, `osv_get_vulnerability`, `osv_list_ecosystems`. |
 | `src/services/osv-api` | OSV.dev REST API service — fetch, retry, response normalization. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
@@ -283,7 +283,7 @@ See [`CLAUDE.md`/`AGENTS.md`](./CLAUDE.md) for development guidelines and archit
 
 ## Contributing
 
-Issues and pull requests are welcome. Run checks and tests before submitting:
+Issues are welcome. Run checks and tests before submitting:
 
 ```sh
 bun run devcheck
