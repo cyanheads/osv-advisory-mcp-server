@@ -18,6 +18,12 @@ import { initOsvApiService } from './services/osv-api/osv-api-service.js';
 await createApp({
   name: 'osv-advisory-mcp-server',
   title: 'osv-advisory-mcp-server',
+  /**
+   * Every tool is a pure read against OSV.dev with no cross-call state and no
+   * `ctx.requestInput` gate, so a session store buys nothing. `MCP_SESSION_MODE`
+   * still overrides this when a deployment sets a meaningful value.
+   */
+  sessionMode: 'stateless',
   tools: [osvListEcosystems, osvQueryPackage, osvGetVulnerability, osvQueryBatch],
   resources: [],
   prompts: [],
