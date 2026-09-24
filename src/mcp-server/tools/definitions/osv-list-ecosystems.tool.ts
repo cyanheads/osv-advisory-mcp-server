@@ -6,13 +6,14 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 
 /**
- * Supported ecosystem strings from the OSV schema, last verified 2026-07-11.
- * The 49 named ecosystems are the `$defs.ecosystemName` enum in the OSV schema's
- * `validation/schema.json`; `GIT` is additionally accepted through the
- * `$defs.ecosystemWithSuffix` pattern (it is NOT in the named enum) — 50 total.
- * `GSD` is deliberately excluded: it is an OSV vulnerability-ID home-database
- * prefix (e.g. `GSD-2020-1000`, `$defs.prefix`), not an ecosystem — OSV rejects
- * it as one (HTTP 400 `Invalid ecosystem.`).
+ * Supported ecosystem strings, last verified 2026-09-24. The rule: every member of the
+ * `$defs.ecosystemName` enum in the OSV schema's `validation/schema.json` that live
+ * `POST /v1/query` accepts, plus `GIT` — 51 named + `GIT` = 52. Schema membership alone
+ * is not enough: a member OSV.dev still rejects (`Red Hat Lightwell` as of that date,
+ * HTTP 400 `invalid ecosystem`) is withheld until it is accepted. `GIT` is valid through
+ * the `$defs.ecosystemWithSuffix` pattern, not the named enum. `GSD` is excluded: it is
+ * a vulnerability-ID prefix (`GSD-2020-1000`, `$defs.prefix`), not an ecosystem.
+ * `bun run check:ecosystems` reports drift against the live schema and API.
  * Strings are case-sensitive exact matches required by the OSV API.
  * Source: https://github.com/ossf/osv-schema/blob/main/validation/schema.json
  *         (rendered: https://ossf.github.io/osv-schema/#affectedpackageecosystem-field)
@@ -40,6 +41,7 @@ export const SUPPORTED_ECOSYSTEMS: readonly string[] = [
   'Go',
   'Hackage',
   'Hex',
+  'Homebrew',
   'Julia',
   'Kubernetes',
   'Linux',
@@ -67,17 +69,14 @@ export const SUPPORTED_ECOSYSTEMS: readonly string[] = [
   'vcpkg',
   'VSCode',
   'Wolfi',
+  'WordPress',
   // Accepted via the ecosystemWithSuffix pattern, not the named ecosystemName enum.
   'GIT',
 ] as const;
 
 export const osvListEcosystems = tool('osv_list_ecosystems', {
   description:
-    'Return the list of supported ecosystem identifier strings for use with osv_query_package and osv_query_batch. ' +
-    'Ecosystem strings are case-sensitive exact matches — passing "pypi" instead of "PyPI" returns an error from the API. ' +
-    'Use this tool to discover valid ecosystem strings before querying, or to verify an ecosystem identifier ' +
-    'from a lockfile format. The list is static (maintained from the OSV schema spec) and may occasionally ' +
-    'lag newly added ecosystems.',
+    'Return the supported ecosystem identifier strings for osv_query_package and osv_query_batch: every ecosystem the OSV schema names that OSV.dev accepts at query time, plus GIT, as verified on 2026-09-24. Ecosystem strings are case-sensitive exact matches — passing "pypi" instead of "PyPI" returns an error from the API. Use this tool to discover valid ecosystem strings before querying, or to verify an ecosystem identifier from a lockfile format. The list is static and may lag ecosystems added after that date.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
 
   input: z.object({}),
@@ -95,11 +94,7 @@ export const osvListEcosystems = tool('osv_list_ecosystems', {
     ctx.log.info('Listing OSV ecosystems', { count: SUPPORTED_ECOSYSTEMS.length });
     return {
       ecosystems: [...SUPPORTED_ECOSYSTEMS],
-      note:
-        'This list mirrors the OSV schema (validation/schema.json) as of 2026-07-11 — the ' +
-        'ecosystemName enum plus GIT. It may lag newly added ecosystems; OSV.dev is the ' +
-        'authority at query time. Canonical reference: ' +
-        'https://ossf.github.io/osv-schema/#affectedpackageecosystem-field',
+      note: 'Every ecosystem the OSV schema (validation/schema.json) names that OSV.dev accepts at query time, plus GIT, as verified on 2026-09-24. A schema ecosystem OSV.dev does not yet accept is left out until it does. The list may lag later additions; OSV.dev is the authority at query time. Canonical reference: https://ossf.github.io/osv-schema/#affectedpackageecosystem-field',
     };
   },
 
