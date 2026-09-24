@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.1.14-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/osv-advisory-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/osv-advisory-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/osv-advisory-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0%2B-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.1.15-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/osv-advisory-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/osv-advisory-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/osv-advisory-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0%2B-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -45,7 +45,9 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 ### `osv_query_package` <sub>tool</sub>
 
 - Accepts `name`, `ecosystem` (case-sensitive exact match), and `version` — an exact version string, not a range
-- Returns matching advisories with OSV IDs, CVE `aliases`, CVSS severity vectors, `severityLabel`, `fixedVersions`, `affectedRanges` (SEMVER/ECOSYSTEM/GIT), and `cweIds`
+- Surrounding whitespace is trimmed from all three before the request, and `queryMeta` echoes the trimmed values; interior whitespace (`Rocky Linux`) is kept. Blank or whitespace-only values are rejected before any upstream call
+- Returns matching advisories with OSV IDs, CVE `aliases`, severity entries (CVSS vectors, Ubuntu priorities), `severityLabel` with its `severitySource`, `fixedVersions`, `affectedRanges` (SEMVER/ECOSYSTEM/GIT), and `cweIds`
+- `fixedVersions` lists every fix the advisory records for the queried package (one per affected interval), matched the way OSV matches the query — release-suffixed ecosystems (`Debian` → `Debian:12`, `Ubuntu:22.04` → `Ubuntu:22.04:LTS`) and PEP 503 names on PyPI. Other packages' fixes and GIT commits stay out of it; `affectedRanges` keeps every range
 - `truncated: true` means OSV paginated beyond `OSV_QUERY_MAX_PAGES` (default 10) — an empty `vulns` array with `truncated: true` is NOT a confirmed clean result
 - Typed `invalid_ecosystem` error when the ecosystem string isn't recognized by OSV — call `osv_list_ecosystems` for valid values, then retry
 - `aliases` on each vuln chain to `nist-nvd-mcp-server` for CVSS base scores, EPSS exploitation probability, and CISA KEV status
@@ -55,7 +57,8 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 ### `osv_query_batch` <sub>tool</sub>
 
 - Accepts an array of `{name, ecosystem, version}` tuples, 1–1000 per call; `results[i]` corresponds positionally to `packages[i]`
-- Per-package `vulnerable`, `vulnCount`, `vulns` (with `aliases` and `severityLabel`), `fixedVersions`, and a nullable `error` — one bad ecosystem or upstream failure fails only that row, not the whole batch
+- Each row's fields are trimmed of surrounding whitespace the same way as `osv_query_package`, and `results[i]` echoes the trimmed values; a blank field in any row rejects the call
+- Per-package `vulnerable`, `vulnCount`, `vulns` (with `aliases`, `severityLabel`, and the row package's `fixedVersions`), and a nullable `error` — one bad ecosystem or upstream failure fails only that row, not the whole batch
 - Aggregate `summary`: `totalPackages`, `vulnerableCount`, `cleanCount`, `truncatedCount`, `errorCount`, `totalVulns`, `worstSeverity`
 - `cleanCount` excludes truncated rows — a per-package `truncated: true` result is never counted clean even with zero findings
 - Per-package requests run in parallel, capped by `OSV_BATCH_CONCURRENCY` (default 10)
@@ -64,9 +67,10 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 
 ### `osv_get_vulnerability` <sub>tool</sub>
 
-- Accepts any OSV ID prefix: `GHSA-` (GitHub), `PYSEC-` (Python), `RUSTSEC-` (Rust), `GO-` (Go), `DSA-`/`DLA-` (Debian), `CVE-` (direct fallback lookups)
-- Returns the full record — `details` text, all CVE `aliases`, every affected package and version range, `fixedVersions`, CVSS `severity` vectors, `cweIds`, and `references` (ADVISORY, FIX, REPORT, etc.)
-- Typed `vulnerability_not_found` error when the ID doesn't exist in OSV — a CVE-style alias may still resolve via `nist-nvd-mcp-server`
+- Accepts one exact, complete advisory ID from any OSV source database, matched case-sensitively — `GHSA-` (GitHub), `PYSEC-` (PyPI), `RUSTSEC-` (Rust), `GO-` (Go), `DSA-`/`DLA-` (Debian), `USN-` (Ubuntu), `RHSA-` (Red Hat), `CVE-`, and the rest. IDs come from `osv_query_package` / `osv_query_batch` results
+- Surrounding whitespace is trimmed before the request (`" GHSA-29mw-wpgm-hmr9 "` resolves); input that can't be an OSV ID (wildcards, a bare package name, a prefix with no ID) is rejected before any upstream call, with a message naming the expected form
+- Returns the full record — `details` text, all CVE `aliases`, every affected package with its version ranges, ordered `fixed` events, and any package-level severity, severity entries with `severityLabel` and `severitySource`, `cweIds`, and `references` (ADVISORY, FIX, REPORT, etc.)
+- Typed `vulnerability_not_found` error when the ID doesn't exist in OSV — the recovery covers case and the Debian/Ubuntu/SUSE revision suffix (`DSA-5678-1`, not `DSA-5678`); a CVE-style alias may still resolve via `nist-nvd-mcp-server`
 - `withdrawn` is present only on retracted advisories — treat as no longer active, not as an error
 
 ---
@@ -75,7 +79,7 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 
 - No input; returns the static list of valid `ecosystem` identifier strings plus an advisory `note` on currency
 - Ecosystem strings are case-sensitive exact matches — `"pypi"` fails where `"PyPI"` succeeds
-- Sourced from the OSV schema's `ecosystemName` enum plus `GIT` (accepted via the `ecosystemWithSuffix` pattern); may lag newly added ecosystems
+- Every ecosystem in the OSV schema's `ecosystemName` enum that OSV.dev accepts at query time, plus `GIT` (accepted via the `ecosystemWithSuffix` pattern); a schema ecosystem OSV.dev still rejects is left out. The `note` carries the verification date; the list may lag later additions
 
 ## Features
 
@@ -86,14 +90,15 @@ OSV-specific:
 - No API key required — OSV.dev is fully public, keyless, and has no published rate limit
 - `osv_query_batch` issues parallel per-package requests (capped by `OSV_BATCH_CONCURRENCY`) and returns full records, including `aliases`, that the upstream OSV batch endpoint omits
 - Per-package failures are isolated in `osv_query_batch` — one invalid ecosystem or upstream error surfaces as that row's `error` without failing the whole batch
-- Ecosystem validation via `osv_list_ecosystems`, kept in sync with the OSV schema's `ecosystemName` enum
+- Ecosystem discovery via `osv_list_ecosystems` — the OSV schema's ecosystems that OSV.dev accepts, checked against both with `bun run check:ecosystems`
 
 Agent-friendly output:
 
 - `aliases` (CVE IDs) surfaced on every vuln entry — the composition point for chaining to `nist-nvd-mcp-server` for CVSS base scores, EPSS, and CISA KEV status
-- `severityLabel` derived from GHSA `database_specific.severity` or the highest CVSS base score; `null` rather than fabricated when neither source is available
+- `severityLabel` from the first source that yields one: `database_specific.severity` (GHSA, openEuler, and others; `Medium` reads as `MODERATE`), an Ubuntu priority, then the highest CVSS v3/v4 score computed from the vector as published. Package-level severity counts when the record has none. `severitySource` names the entry used, with the computed score for CVSS; both are `null` rather than fabricated when no source yields a label
 - Truncation is never silently treated as clean — `truncated` (single query) and per-package `truncated` plus `truncatedCount` (batch) flag incomplete OSV pagination, and truncated rows are excluded from `cleanCount`
 - Query echo (`queryMeta` / `effectiveQuery`) and aggregate batch `summary` (`worstSeverity`, `vulnerableCount`, `cleanCount`) let agents verify requests and triage without reading every row
+- Advisory text is framed as untrusted data in `content[]` and escaped at the render boundary: tag-shaped text (`<template>`, `<script`), autolinks, reference definitions, non-`http(s)` link destinations (`javascript:`), and forged frame tags can't turn into live HTML or links in a Markdown client. `structuredContent` keeps every OSV string verbatim
 
 ## Getting started
 
@@ -251,6 +256,7 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
   bun run devcheck   # Lint, format, typecheck, security
   bun run test       # Vitest test suite
   bun run lint:mcp   # Validate MCP definitions against spec
+  bun run check:ecosystems  # Compare osv_list_ecosystems with the live OSV schema and API
   ```
 
 ### Docker

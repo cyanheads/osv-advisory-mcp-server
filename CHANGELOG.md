@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.15](changelog/0.1.x/0.1.15.md) — 2026-09-24 · 🛡️ Security
+
+Advisory markup is escaped in content[] text, fixedVersions lists only the queried package's fixes, and severityLabel is derived from Ubuntu priorities and CVSS scores with a new severitySource
+
 ## [0.1.14](changelog/0.1.x/0.1.14.md) — 2026-09-20
 
 Framework 0.13.6 adoption — typed argument-rejection errors, discriminated output-schema error shapes, and explicit stateless session mode

@@ -1,6 +1,6 @@
 # osv-advisory-mcp-server - Directory Structure
 
-Generated on: 2026-09-20 15:01:21
+Generated on: 2026-09-24 17:03:36
 
 ```text
 osv-advisory-mcp-server/
@@ -121,6 +121,7 @@ osv-advisory-mcp-server/
 │   ├── build.ts
 │   ├── check-dependency-specifiers.ts
 │   ├── check-docs-sync.ts
+│   ├── check-ecosystems.ts
 │   ├── check-framework-antipatterns.ts
 │   ├── check-skill-versions.ts
 │   ├── check-skills-sync.ts
@@ -141,29 +142,61 @@ osv-advisory-mcp-server/
 │   │   ├── resources/
 │   │   │   └── definitions/
 │   │   └── tools/
-│   │       └── definitions/
-│   │           ├── index.ts
-│   │           ├── osv-get-vulnerability.tool.ts
-│   │           ├── osv-list-ecosystems.tool.ts
-│   │           ├── osv-query-batch.tool.ts
-│   │           └── osv-query-package.tool.ts
+│   │       ├── definitions/
+│   │       │   ├── index.ts
+│   │       │   ├── osv-get-vulnerability.tool.ts
+│   │       │   ├── osv-list-ecosystems.tool.ts
+│   │       │   ├── osv-query-batch.tool.ts
+│   │       │   └── osv-query-package.tool.ts
+│   │       └── render-escape.ts
 │   ├── services/
 │   │   └── osv-api/
+│   │       ├── affected-match.ts
 │   │       ├── osv-api-service.ts
+│   │       ├── severity.ts
 │   │       └── types.ts
 │   └── index.ts
 ├── tests/
 │   ├── config/
 │   │   └── server-config.test.ts
+│   ├── fixtures/
+│   │   └── osv/
+│   │       ├── CVE-2025-31115.json
+│   │       ├── CVE-2026-34743.json
+│   │       ├── DEBIAN-CVE-2024-3094.json
+│   │       ├── DEBIAN-CVE-2025-31115.json
+│   │       ├── GHSA-29mw-wpgm-hmr9.json
+│   │       ├── GHSA-2jv5-9r88-3w3p.json
+│   │       ├── GHSA-6757-jp84-gxfx.json
+│   │       ├── GHSA-rp9w-3fw7-7cwq.json
+│   │       ├── HSEC-2023-0001.json
+│   │       ├── OESA-2023-1092.json
+│   │       ├── PYSEC-2022-190.json
+│   │       ├── PYSEC-2022-304.json
+│   │       ├── UBUNTU-CVE-2022-1271.json
+│   │       ├── UBUNTU-CVE-2024-3094.json
+│   │       └── UBUNTU-CVE-2025-31115.json
+│   ├── helpers/
+│   │   ├── argument-rejection.ts
+│   │   ├── markdown.ts
+│   │   └── osv-fixtures.ts
 │   ├── prompts/
 │   ├── resources/
+│   ├── scripts/
+│   │   └── check-ecosystems.test.ts
 │   ├── services/
+│   │   ├── affected-match.test.ts
 │   │   └── osv-api-service.test.ts
 │   └── tools/
+│       ├── __snapshots__/
+│       │   ├── osv-get-vulnerability.tool.test.ts.snap
+│       │   ├── osv-query-batch.tool.test.ts.snap
+│       │   └── osv-query-package.tool.test.ts.snap
 │       ├── osv-get-vulnerability.tool.test.ts
 │       ├── osv-list-ecosystems.tool.test.ts
 │       ├── osv-query-batch.tool.test.ts
-│       └── osv-query-package.tool.test.ts
+│       ├── osv-query-package.tool.test.ts
+│       └── render-escape.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes
