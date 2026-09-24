@@ -23,9 +23,18 @@ const TAG_OPENER = /<(?=[A-Za-z/!?]|[\w.!#$%&'*+/=?^`{|}~-]+@)/g;
 /**
  * The `]` of an inline link or image whose destination is not an `http(s)://` URL. Escaping it
  * leaves the brackets as text, so advisory text can neither link to `javascript:` (entity-encoded
- * or not) nor close one of the server's own `[LABEL]`s into a link.
+ * or not) nor close one of the server's own `[LABEL]`s into a link. A backslash and the character
+ * after it match as a pair and are kept: a `]` upstream already escaped stays literal, where
+ * escaping it again (`\]` → `\\]`) would leave a literal backslash before a live `]`.
  */
-const UNSAFE_LINK_CLOSER = /\](?=\((?![ \t]*https?:\/\/))/gi;
+const UNSAFE_LINK_CLOSER = /\\[\s\S]|\](?=\((?![ \t]*https?:\/\/))/gi;
+
+/**
+ * The inline form of {@link UNSAFE_LINK_CLOSER}, which also takes a `]` before `:`. An inline
+ * value may follow one of the server's own line-leading `[`s (a reference or range type), and
+ * its `]:` would close that label into a reference definition.
+ */
+const INLINE_LINK_CLOSER = /\\[\s\S]|\](?=:|\((?![ \t]*https?:\/\/))/gi;
 
 /** A `<` that starts the server's own frame tags, which may not appear verbatim even in code. */
 const FRAME_TAG = /<(?=\/?advisory_(?:summary|text))/gi;
@@ -70,25 +79,26 @@ function closesFence(line: string, fence: Fence): boolean {
 }
 
 /**
- * Neutralize tag openers, non-http(s) links, and a line-leading reference definition on one
- * line. The definition check runs last: `[a](x]: javascript:…` only becomes a definition once
- * its `]` is escaped, so the check has to see the escaped line.
+ * Neutralize tag openers, the link closers `closer` matches, and a line-leading reference
+ * definition on one line. The definition check runs last: `[a](x]: javascript:…` only becomes
+ * a definition once its `]` is escaped, so the check has to see the escaped line.
  */
-function escapeTextLine(line: string): string {
+function escapeTextLine(line: string, closer: RegExp): string {
   return line
     .replace(TAG_OPENER, '&lt;')
-    .replace(UNSAFE_LINK_CLOSER, '\\]')
+    .replace(closer, (match) => (match === ']' ? '\\]' : match))
     .replace(REFERENCE_DEFINITION, '$1\\[');
 }
 
 /**
  * Escape an upstream string rendered inline (a summary, ID, version, URL, timestamp, …).
  * Line breaks become a space, so the value stays on its line; tag and autolink openers become
- * `&lt;`. Because a value may start a line, a leading reference-definition bracket and a
- * leading fence run are backslash-escaped too.
+ * `&lt;`, and a `]` that could close a link or a reference-definition label is backslash-escaped.
+ * Because a value may start a line, a leading reference-definition bracket and a leading fence
+ * run are backslash-escaped too.
  */
 export function escapeAdvisoryInline(value: string): string {
-  const line = escapeTextLine(value.replace(LINE_BREAKS, ' '));
+  const line = escapeTextLine(value.replace(LINE_BREAKS, ' '), INLINE_LINK_CLOSER);
   const fence = parseFenceOpener(line);
   if (!fence) return line;
   return `${line.slice(0, fence.indent)}\\${line.slice(fence.indent)}`;
@@ -115,7 +125,7 @@ export function escapeAdvisoryBlock(text: string): string {
     const opener = parseFenceOpener(line);
     if (opener && opener.indent > 0) fencesTrusted = false;
     else if (opener && fencesTrusted) fence = opener;
-    out.push(escapeTextLine(line));
+    out.push(escapeTextLine(line, UNSAFE_LINK_CLOSER));
   }
   if (fence) out.push(fence.char.repeat(fence.length));
   return out.join('\n');

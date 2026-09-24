@@ -109,6 +109,11 @@ const HOSTILE: Array<{ name: string; summary?: string; details?: string }> = [
   },
   { name: 'link destination on the next line', details: '[a](\njavascript:alert(1))' },
   {
+    name: 'backslash-escaped link closer',
+    summary: '[a\\](javascript:alert(1))',
+    details: 'see [b\\](javascript:alert(2)) and [c\\\\\\](javascript:alert(3))',
+  },
+  {
     name: 'escaped link bracket turned into a reference definition and its use',
     summary: '[a](x]: javascript:alert(1)',
     details: '[b](y]: javascript:alert(2)\n\nuse [a](x] and [b](y]',
@@ -139,8 +144,9 @@ describe('escapeAdvisoryInline', () => {
   });
 
   it('escapes a leading reference-definition bracket, bare or after quote/list markers', () => {
-    expect(escapeAdvisoryInline('[a]: javascript:x')).toBe('\\[a]: javascript:x');
-    expect(escapeAdvisoryInline('> - [a]: x')).toBe('> - \\[a]: x');
+    expect(escapeAdvisoryInline('[a]: javascript:x')).toBe('\\[a\\]: javascript:x');
+    expect(escapeAdvisoryInline('> - [a]: x')).toBe('> - \\[a\\]: x');
+    expect(escapeAdvisoryInline('[a')).toBe('\\[a');
     expect(escapeAdvisoryInline('[CVE-1](https://e.x) link')).toBe('[CVE-1](https://e.x) link');
   });
 
@@ -159,6 +165,18 @@ describe('escapeAdvisoryInline', () => {
     expect(escapeAdvisoryInline('[a](https://e.x) [b](HTTP://e.x)')).toBe(
       '[a](https://e.x) [b](HTTP://e.x)',
     );
+  });
+
+  it('escapes only a live ], leaving one a backslash already escapes', () => {
+    expect(escapeAdvisoryInline('see [a\\](javascript:x)')).toBe('see [a\\](javascript:x)');
+    expect(escapeAdvisoryInline('see [a\\\\](javascript:x)')).toBe('see [a\\\\\\](javascript:x)');
+    expect(escapeAdvisoryBlock('see [a\\](javascript:x)')).toBe('see [a\\](javascript:x)');
+  });
+
+  it('escapes a ] before a colon, so a value cannot close a definition label the server opened', () => {
+    expect(escapeAdvisoryInline('ADVISORY]: javascript:x')).toBe('ADVISORY\\]: javascript:x');
+    expect(escapeAdvisoryInline('ADVISORY\\]: x')).toBe('ADVISORY\\]: x');
+    expect(escapeAdvisoryInline('CVE-2024-1: note')).toBe('CVE-2024-1: note');
   });
 
   it('returns an empty string unchanged', () => {
@@ -282,6 +300,8 @@ describe('escape timing', () => {
     'bracket runs': (n) => '[\\'.repeat(n / 2),
     'link closers': (n) => `[${'](x'.repeat(n / 3)}`,
     'link closer before a space run': (n) => `](${' '.repeat(n - 2)}`,
+    'escaped link closers': (n) => '\\]('.repeat(n / 3),
+    'backslash run before a closer': (n) => `${'\\'.repeat(n - 3)}]:(`,
   };
 
   it.each(Object.entries(WORST_CASES))('%s grows linearly (5k → 80k chars)', (_name, build) => {
