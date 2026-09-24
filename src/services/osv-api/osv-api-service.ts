@@ -8,16 +8,20 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
 import { McpError, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import { matchesQueriedPackage, type PackageQuery } from './affected-match.js';
+import { deriveSeverity } from './severity.js';
 import type {
   BatchVulnBrief,
   OsvAffectedRange,
   OsvApiError,
+  OsvPackageVulnerability,
   OsvRangeEvent,
   OsvSeverityEntry,
   OsvVulnerability,
   RawOsvAffected,
   RawOsvEvent,
   RawOsvQueryResponse,
+  RawOsvSeverity,
   RawOsvVulnerability,
 } from './types.js';
 
@@ -105,33 +109,40 @@ function extractAffectedRanges(affected: RawOsvAffected[] | undefined): OsvAffec
   return out;
 }
 
-/** Extract distinct fixed versions from affected ranges. */
-function extractFixedVersions(ranges: OsvAffectedRange[]): string[] {
+/**
+ * Every `fixed` event of the SEMVER/ECOSYSTEM ranges on the entries matching the queried
+ * package, deduplicated in record order. GIT ranges carry commit hashes, not versions, and
+ * stay visible only in `affectedRanges`. No fallback: with no matching entry the list is empty.
+ */
+function extractFixedVersions(matching: RawOsvAffected[]): string[] {
   const seen = new Set<string>();
-  for (const r of ranges) {
-    if (r.fixed) seen.add(r.fixed);
+  for (const entry of matching) {
+    for (const range of entry.ranges ?? []) {
+      if (range.type !== 'SEMVER' && range.type !== 'ECOSYSTEM') continue;
+      for (const evt of range.events ?? []) {
+        if (evt.fixed !== undefined) seen.add(evt.fixed);
+      }
+    }
   }
   return [...seen];
 }
 
-/** Derive severity label from database_specific. Returns null when absent or unrecognizable. */
-function deriveSeverityLabel(raw: RawOsvVulnerability): string | null {
-  const label = raw.database_specific?.severity;
-  if (!label) return null;
-  const normalized = label.toUpperCase();
-  if (['LOW', 'MODERATE', 'HIGH', 'CRITICAL'].includes(normalized)) return normalized;
-  return null;
+/** Copy raw severity entries to their normalized shape. */
+function toSeverityEntries(entries: RawOsvSeverity[]): OsvSeverityEntry[] {
+  return entries.map((s) => ({ type: s.type, score: s.score }));
 }
 
-/** Normalize a raw vuln record into a typed OsvVulnerability. */
-function normalizeVuln(raw: RawOsvVulnerability): OsvVulnerability {
+/**
+ * Normalize a raw vuln record into a typed OsvVulnerability. `severityScope` is the set of
+ * affected entries whose package-level severity may label the record — every entry unless a
+ * package query narrows it.
+ */
+function normalizeVuln(
+  raw: RawOsvVulnerability,
+  severityScope: RawOsvAffected[] | undefined = raw.affected,
+): OsvVulnerability {
   const affectedRanges = extractAffectedRanges(raw.affected);
-  const fixedVersions = extractFixedVersions(affectedRanges);
-  const severityLabel = deriveSeverityLabel(raw);
-  const severity: OsvSeverityEntry[] = (raw.severity ?? []).map((s) => ({
-    type: s.type,
-    score: s.score,
-  }));
+  const severity = toSeverityEntries(raw.severity ?? []);
 
   // Package-less entries (GIT-range-only CVE records) are surfaced with empty
   // packageName/ecosystem — they carry the only affected source range and must
@@ -141,6 +152,7 @@ function normalizeVuln(raw: RawOsvVulnerability): OsvVulnerability {
     packageName: a.package?.name ?? '',
     ecosystem: a.package?.ecosystem ?? '',
     ...(a.package?.purl ? { purl: a.package.purl } : {}),
+    ...(a.severity?.length ? { severity: toSeverityEntries(a.severity) } : {}),
     versions: a.versions ?? [],
     ranges: (a.ranges ?? []).map((r) => {
       const out: {
@@ -174,19 +186,33 @@ function normalizeVuln(raw: RawOsvVulnerability): OsvVulnerability {
     published: raw.published ?? '',
     modified: raw.modified ?? '',
     severity,
-    severityLabel,
+    ...deriveSeverity(raw, severityScope),
     affected,
     cweIds: raw.database_specific?.cwe_ids ?? [],
     references,
     schemaVersion: raw.schema_version ?? '',
     affectedRanges,
-    fixedVersions,
     ...(raw.withdrawn ? { withdrawn: raw.withdrawn } : {}),
   };
 }
 
-/** Trim a full OsvVulnerability to a batch-output brief. */
-function toBrief(vuln: OsvVulnerability): BatchVulnBrief {
+/**
+ * Normalize a vuln returned for a package query, scoping the package-level fields to the
+ * queried package: `fixedVersions`, and the affected entries a severity label may come from.
+ */
+function normalizePackageVuln(
+  raw: RawOsvVulnerability,
+  query: PackageQuery,
+): OsvPackageVulnerability {
+  const matching = (raw.affected ?? []).filter((a) => matchesQueriedPackage(a.package, query));
+  return {
+    ...normalizeVuln(raw, matching),
+    fixedVersions: extractFixedVersions(matching),
+  };
+}
+
+/** Trim a package-query vuln to a batch-output brief. */
+function toBrief(vuln: OsvPackageVulnerability): BatchVulnBrief {
   return {
     id: vuln.id,
     summary: vuln.summary,
@@ -319,7 +345,8 @@ export class OsvApiService {
 
   /**
    * Query vulnerabilities for a single package+version.
-   * Returns the full vulnerability list or an empty array when none found.
+   * Returns the full vulnerability list or an empty array when none found; each vuln's
+   * `fixedVersions` is scoped to the queried package.
    * Throws for network errors; returns { invalid: true } when OSV returns HTTP 400 (invalid ecosystem).
    */
   async queryPackage(
@@ -328,10 +355,11 @@ export class OsvApiService {
     version: string,
     ctx: Context,
   ): Promise<
-    | { vulns: OsvVulnerability[]; invalid: false; truncated: boolean }
+    | { vulns: OsvPackageVulnerability[]; invalid: false; truncated: boolean }
     | { invalid: true; message: string }
   > {
-    const vulns: OsvVulnerability[] = [];
+    const query: PackageQuery = { name, ecosystem };
+    const vulns: OsvPackageVulnerability[] = [];
     let pageToken: string | undefined;
 
     // Follow OSV's next_page_token across pages, accumulating vulns, until the
@@ -363,7 +391,7 @@ export class OsvApiService {
 
       const raw = data as RawOsvQueryResponse;
       // Empty object `{}` means no vulns on this page — treat missing `vulns` as empty.
-      for (const v of raw.vulns ?? []) vulns.push(normalizeVuln(v));
+      for (const v of raw.vulns ?? []) vulns.push(normalizePackageVuln(v, query));
       pageToken = raw.next_page_token || undefined;
       if (!pageToken) break;
     }
@@ -505,4 +533,10 @@ export function getOsvApiService(): OsvApiService {
   return _service;
 }
 
-export type { BatchVulnBrief, OsvAffectedRange, OsvRangeEvent, OsvVulnerability };
+export type {
+  BatchVulnBrief,
+  OsvAffectedRange,
+  OsvPackageVulnerability,
+  OsvRangeEvent,
+  OsvVulnerability,
+};

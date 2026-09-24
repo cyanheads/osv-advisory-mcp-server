@@ -3,10 +3,14 @@
  * @module tests/tools/osv-query-batch.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { z } from '@cyanheads/mcp-ts-core';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { osvQueryBatch } from '@/mcp-server/tools/definitions/osv-query-batch.tool.js';
 import * as osvApiModule from '@/services/osv-api/osv-api-service.js';
+import { expectSingleArgumentIssue } from '../helpers/argument-rejection.js';
+import { contentText, countFrameClosers, scanMarkdown } from '../helpers/markdown.js';
+import { captureOsvQueries, loadOsvRecord, stubOsvApi } from '../helpers/osv-fixtures.js';
 
 /** Build a minimal batch result row. */
 function makeResult(
@@ -528,6 +532,196 @@ describe('osvQueryBatch', () => {
           ],
         }),
       ).toThrow();
+    });
+  });
+});
+
+describe('osvQueryBatch over a real service and stubbed OSV HTTP', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    osvApiModule.initOsvApiService({ timeoutMs: 5000 });
+  });
+
+  it('renders the dompurify summary escaped in content[], verbatim in structuredContent (#18)', async () => {
+    const record = loadOsvRecord('GHSA-rp9w-3fw7-7cwq');
+    stubOsvApi({ query: () => [record] });
+    const result = await runToolContract(osvQueryBatch, {
+      packages: [{ name: 'dompurify', ecosystem: 'npm', version: '2.3.0' }],
+    });
+
+    const text = contentText(result);
+    expect(text).toContain(
+      '<advisory_summary>DOMPurify IN_PLACE Sanitization Bypass via Attached Shadow Root Inside &lt;template>.content</advisory_summary>',
+    );
+    expect(text).not.toMatch(/<template/);
+    expect(scanMarkdown(text).html).toEqual([]);
+    expect(result.structuredContent).toMatchObject({
+      results: [{ vulns: [{ id: 'GHSA-rp9w-3fw7-7cwq', summary: record.summary }] }],
+    });
+  });
+
+  it('keeps structuredContent for the dompurify advisory unchanged', async () => {
+    stubOsvApi({ query: () => [loadOsvRecord('GHSA-rp9w-3fw7-7cwq')] });
+    const result = await runToolContract(osvQueryBatch, {
+      packages: [{ name: 'dompurify', ecosystem: 'npm', version: '2.3.0' }],
+    });
+    expect(result.structuredContent).toMatchSnapshot();
+  });
+
+  it('escapes every advisory-sourced string in content[] (#18)', () => {
+    const tag = (field: string) => `<i>${field}</i> [${field}](javascript:alert(1))`;
+    const text = contentText({
+      content: osvQueryBatch.format!({
+        results: [
+          {
+            name: 'pkg',
+            ecosystem: 'npm',
+            version: '1.0.0',
+            vulnerable: true,
+            truncated: false,
+            error: null,
+            vulnCount: 1,
+            vulns: [
+              {
+                id: tag('id'),
+                summary: tag('summary </advisory_summary>'),
+                aliases: [tag('alias')],
+                severityLabel: tag('label'),
+                fixedVersions: [tag('fix')],
+              },
+            ],
+          },
+          {
+            name: 'bad',
+            ecosystem: 'npm',
+            version: '1.0.0',
+            vulnerable: false,
+            truncated: false,
+            error: tag('error'),
+            vulnCount: 0,
+            vulns: [],
+          },
+        ],
+        summary: {
+          totalPackages: 2,
+          vulnerableCount: 1,
+          cleanCount: 0,
+          truncatedCount: 0,
+          errorCount: 1,
+          totalVulns: 1,
+          worstSeverity: null,
+        },
+      }),
+    });
+    expect(text).not.toMatch(/<\/?i>/);
+    expect(text.match(/&lt;i>/g)).toHaveLength(6);
+    expect(countFrameClosers(text)).toBe(1);
+    expect(scanMarkdown(text).html).toEqual([]);
+    expect(scanMarkdown(text).links).toEqual([]);
+  });
+
+  it('labels rows and worstSeverity with the same derivation as osv_query_package (#17)', async () => {
+    stubOsvApi({
+      query: (pkg) =>
+        pkg.name === 'openssl'
+          ? [loadOsvRecord('OESA-2023-1092')]
+          : [loadOsvRecord('UBUNTU-CVE-2024-3094'), loadOsvRecord('HSEC-2023-0001')],
+    });
+    const result = await runToolContract(osvQueryBatch, {
+      packages: [
+        { name: 'openssl', ecosystem: 'openEuler:22.03-LTS', version: '1.0.0' },
+        { name: 'xz-utils', ecosystem: 'Ubuntu:22.04:LTS', version: '5.4.5-0.3' },
+      ],
+    });
+    expect(result.structuredContent).toMatchObject({
+      results: [
+        { vulns: [{ id: 'OESA-2023-1092', severityLabel: 'MODERATE' }] },
+        {
+          vulns: [
+            { id: 'UBUNTU-CVE-2024-3094', severityLabel: 'CRITICAL' },
+            // HSEC's severity sits on an aeson entry, which an xz-utils row does not match.
+            { id: 'HSEC-2023-0001', severityLabel: null },
+          ],
+        },
+      ],
+      summary: { worstSeverity: 'CRITICAL' },
+    });
+    const text = contentText(result);
+    expect(text).toContain('| Worst severity | CRITICAL |');
+    expect(text).toContain('- `OESA-2023-1092` [MODERATE]');
+    expect(text).toContain('- `UBUNTU-CVE-2024-3094` [CRITICAL]');
+    expect(text).toContain('- `HSEC-2023-0001` — **`CVE-2022-3433`**');
+  });
+
+  it('carries the queried package fixes only, matching osv_query_package for the same tuple (#16)', async () => {
+    stubOsvApi({
+      query: () => [loadOsvRecord('UBUNTU-CVE-2022-1271'), loadOsvRecord('PYSEC-2022-304')],
+    });
+    const result = await runToolContract(osvQueryBatch, {
+      packages: [{ name: 'xz-utils', ecosystem: 'Ubuntu:22.04:LTS', version: '5.2.5-2build2' }],
+    });
+    expect(result.structuredContent).toMatchObject({
+      results: [{ vulns: [{ fixedVersions: ['5.2.5-2ubuntu1'] }, { fixedVersions: [] }] }],
+    });
+    expect(contentText(result)).toContain('→ fix: 5.2.5-2ubuntu1\n');
+  });
+
+  describe('blank-field rejection (#25)', () => {
+    const VALID = { name: 'lodash', ecosystem: 'npm', version: '4.17.20' };
+    const FIELDS = ['name', 'ecosystem', 'version'] as const;
+
+    it.each(FIELDS.flatMap((field) => ['', '   '].map((blank) => [field, blank] as const)))(
+      'rejects packages[1].%s = %j with -32602 and one message, before any OSV call',
+      async (field, blank) => {
+        const fetchSpy = vi.fn();
+        vi.stubGlobal('fetch', fetchSpy);
+        const result = await runToolContract(osvQueryBatch, {
+          packages: [VALID, { ...VALID, [field]: blank }],
+        });
+        const message = expectSingleArgumentIssue(result, ['packages', 1, field]);
+        expect(message).toMatch(/must not be blank/);
+        expect(fetchSpy).not.toHaveBeenCalled();
+      },
+    );
+
+    it('advertises each row field with one pattern and no minLength or allOf', () => {
+      const schema = z.toJSONSchema(osvQueryBatch.input) as unknown as {
+        properties: {
+          packages: { items: { properties: Record<string, Record<string, unknown>> } };
+        };
+      };
+      const { properties } = schema.properties.packages.items;
+      for (const field of FIELDS) {
+        expect(properties[field]).toMatchObject({ type: 'string', pattern: '\\S' });
+        expect(properties[field]).not.toHaveProperty('minLength');
+        expect(properties[field]).not.toHaveProperty('allOf');
+      }
+    });
+  });
+
+  describe('surrounding-whitespace trim (#27)', () => {
+    it('queries OSV with each row trimmed and echoes the trimmed row on both surfaces', async () => {
+      const bodies = captureOsvQueries([loadOsvRecord('GHSA-29mw-wpgm-hmr9')]);
+      const result = await runToolContract(osvQueryBatch, {
+        packages: [
+          { name: ' lodash ', ecosystem: 'npm ', version: '4.17.20 ' },
+          { name: 'openssl', ecosystem: ' Rocky Linux ', version: '\t1.0.0' },
+        ],
+      });
+
+      expect(bodies.map((b) => ({ ...b.package, version: b.version }))).toEqual([
+        { name: 'lodash', ecosystem: 'npm', version: '4.17.20' },
+        { name: 'openssl', ecosystem: 'Rocky Linux', version: '1.0.0' },
+      ]);
+      expect(result.structuredContent).toMatchObject({
+        results: [
+          { name: 'lodash', ecosystem: 'npm', version: '4.17.20', vulnCount: 1, error: null },
+          { name: 'openssl', ecosystem: 'Rocky Linux', version: '1.0.0' },
+        ],
+      });
+      const text = contentText(result);
+      expect(text).toContain('### `lodash` @ `4.17.20` (npm)');
+      expect(text).toContain('`openssl` @ `1.0.0` (Rocky Linux)');
     });
   });
 });

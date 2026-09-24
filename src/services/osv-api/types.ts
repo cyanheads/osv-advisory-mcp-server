@@ -8,10 +8,13 @@
 // Raw API response shapes
 // ---------------------------------------------------------------------------
 
-/** Raw severity entry from OSV API. */
+/**
+ * Raw severity entry from OSV API. The schema defines `CVSS_V2`, `CVSS_V3`, `CVSS_V4` (score is
+ * a vector) and `Ubuntu` (score is an Ubuntu priority); other types pass through untouched.
+ */
 export interface RawOsvSeverity {
   score: string;
-  type: 'CVSS_V2' | 'CVSS_V3' | 'CVSS_V4';
+  type: string;
 }
 
 /** Raw event in an affected range. Each event object carries exactly one boundary key. */
@@ -42,6 +45,8 @@ export interface RawOsvPackage {
 export interface RawOsvAffected {
   package?: RawOsvPackage;
   ranges?: RawOsvRange[];
+  /** Package-level severity — set only when the record-level `severity` is not. */
+  severity?: RawOsvSeverity[];
   /** Explicitly enumerated affected versions, when the advisory lists them. */
   versions?: string[];
 }
@@ -114,6 +119,18 @@ export interface OsvSeverityEntry {
   type: string;
 }
 
+/** Where a `severityLabel` came from. */
+export type OsvSeveritySourceType = 'database_specific' | 'Ubuntu' | 'CVSS_V3' | 'CVSS_V4';
+
+/** The severity entry a `severityLabel` was derived from. */
+export interface OsvSeveritySource {
+  /** Score computed from a CVSS vector as published: every CVSS 4.0 metric group it carries, CVSS 3.x temporal metrics. */
+  computedScore?: number;
+  /** The published value: `database_specific.severity`, an Ubuntu priority, or a CVSS vector. */
+  score: string;
+  type: OsvSeveritySourceType;
+}
+
 /**
  * Ordered event within an affected range. Preserves interval boundaries the
  * collapsed scalar fields (`introduced`/`fixed`/`lastAffected`) cannot express
@@ -148,6 +165,8 @@ export interface OsvVulnerability {
     packageName: string;
     ecosystem: string;
     purl?: string;
+    /** Package-level severity entries — present only when the record carries them here. */
+    severity?: OsvSeverityEntry[];
     /** Explicitly enumerated affected versions, when the advisory lists them. */
     versions?: string[];
     ranges: Array<{
@@ -166,8 +185,6 @@ export interface OsvVulnerability {
   aliases: string[];
   cweIds: string[];
   details: string;
-  /** First safe versions extracted across all affected entries. */
-  fixedVersions: string[];
   id: string;
   modified: string;
   published: string;
@@ -175,14 +192,27 @@ export interface OsvVulnerability {
   schemaVersion: string;
   severity: OsvSeverityEntry[];
   severityLabel: string | null;
+  /** The entry `severityLabel` was derived from; null exactly when the label is. */
+  severitySource: OsvSeveritySource | null;
   summary: string;
   /** ISO 8601 timestamp present only on withdrawn advisories. */
   withdrawn?: string;
 }
 
+/** A vulnerability returned for a package query, with fields scoped to that package. */
+export interface OsvPackageVulnerability extends OsvVulnerability {
+  /**
+   * Every `fixed` event of the SEMVER/ECOSYSTEM ranges on the `affected[]` entries matching
+   * the queried package, deduplicated in record order. Other packages' fixes and GIT commits
+   * are excluded; empty when no matching entry lists a fix.
+   */
+  fixedVersions: string[];
+}
+
 /** Brief per-package vuln entry for batch output. */
 export interface BatchVulnBrief {
   aliases: string[];
+  /** The queried package's fixed versions — see {@link OsvPackageVulnerability.fixedVersions}. */
   fixedVersions: string[];
   id: string;
   severityLabel: string | null;

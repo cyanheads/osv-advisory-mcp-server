@@ -1,0 +1,39 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`osvQueryBatch over a real service and stubbed OSV HTTP > keeps structuredContent for the dompurify advisory unchanged 1`] = `
+{
+  "results": [
+    {
+      "ecosystem": "npm",
+      "error": null,
+      "name": "dompurify",
+      "truncated": false,
+      "version": "2.3.0",
+      "vulnCount": 1,
+      "vulnerable": true,
+      "vulns": [
+        {
+          "aliases": [
+            "CVE-2026-49978",
+          ],
+          "fixedVersions": [
+            "3.4.7",
+          ],
+          "id": "GHSA-rp9w-3fw7-7cwq",
+          "severityLabel": "MODERATE",
+          "summary": "DOMPurify IN_PLACE Sanitization Bypass via Attached Shadow Root Inside <template>.content",
+        },
+      ],
+    },
+  ],
+  "summary": {
+    "cleanCount": 0,
+    "errorCount": 0,
+    "totalPackages": 1,
+    "totalVulns": 1,
+    "truncatedCount": 0,
+    "vulnerableCount": 1,
+    "worstSeverity": "MODERATE",
+  },
+}
+`;

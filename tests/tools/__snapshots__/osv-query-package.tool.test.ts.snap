@@ -1,0 +1,468 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`osvQueryPackage over a real service and stubbed OSV HTTP > render-boundary escape (#18) > keeps structuredContent for GHSA-rp9w-3fw7-7cwq unchanged apart from fixedVersions 1`] = `
+{
+  "queryMeta": {
+    "ecosystem": "npm",
+    "package": "dompurify",
+    "version": "1.0.0",
+    "vulnCount": 1,
+  },
+  "truncated": false,
+  "vulns": [
+    {
+      "affectedRanges": [
+        {
+          "ecosystem": "npm",
+          "events": [
+            {
+              "type": "introduced",
+              "value": "0",
+            },
+            {
+              "type": "fixed",
+              "value": "3.4.7",
+            },
+          ],
+          "fixed": "3.4.7",
+          "introduced": "0",
+          "packageName": "dompurify",
+          "rangeType": "SEMVER",
+          "versions": [],
+        },
+      ],
+      "aliases": [
+        "CVE-2026-49978",
+      ],
+      "cweIds": [
+        "CWE-79",
+      ],
+      "id": "GHSA-rp9w-3fw7-7cwq",
+      "modified": "2026-09-10T03:50:50.441575092Z",
+      "published": "2026-06-15T20:01:45Z",
+      "severity": [
+        {
+          "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:A/VC:N/VI:N/VA:N/SC:L/SI:L/SA:N",
+          "type": "CVSS_V4",
+        },
+      ],
+      "severityLabel": "MODERATE",
+      "severitySource": {
+        "score": "MODERATE",
+        "type": "database_specific",
+      },
+      "summary": "DOMPurify IN_PLACE Sanitization Bypass via Attached Shadow Root Inside <template>.content",
+    },
+  ],
+}
+`;
+
+exports[`osvQueryPackage over a real service and stubbed OSV HTTP > render-boundary escape (#18) > keeps structuredContent for PYSEC-2022-304 unchanged apart from fixedVersions 1`] = `
+{
+  "queryMeta": {
+    "ecosystem": "PyPI",
+    "package": "Django",
+    "version": "1.0.0",
+    "vulnCount": 1,
+  },
+  "truncated": false,
+  "vulns": [
+    {
+      "affectedRanges": [
+        {
+          "ecosystem": "PyPI",
+          "events": [
+            {
+              "type": "introduced",
+              "value": "0",
+            },
+            {
+              "type": "fixed",
+              "value": "5b6b257fa7ec37ff27965358800c67e2dd11c924",
+            },
+          ],
+          "fixed": "5b6b257fa7ec37ff27965358800c67e2dd11c924",
+          "introduced": "0",
+          "packageName": "django",
+          "rangeType": "GIT",
+          "repo": "https://github.com/django/django",
+          "versions": [
+            "3.2",
+            "3.2.1",
+            "3.2.10",
+            "3.2.11",
+            "3.2.12",
+            "3.2.13",
+            "3.2.14",
+            "3.2.15",
+            "3.2.2",
+            "3.2.3",
+            "3.2.4",
+            "3.2.5",
+            "3.2.6",
+            "3.2.7",
+            "3.2.8",
+            "3.2.9",
+            "4.0",
+            "4.0.1",
+            "4.0.2",
+            "4.0.3",
+            "4.0.4",
+            "4.0.5",
+            "4.0.6",
+            "4.0.7",
+            "4.1",
+            "4.1.1",
+            "3.2rc1",
+            "3.2b1",
+            "3.2a1",
+            "1.7a2",
+            "1.4",
+            "1.3",
+            "1.2.1",
+            "1.2",
+            "1.1",
+            "1.0",
+          ],
+        },
+        {
+          "ecosystem": "PyPI",
+          "events": [
+            {
+              "type": "introduced",
+              "value": "3.2",
+            },
+            {
+              "type": "fixed",
+              "value": "3.2.16",
+            },
+            {
+              "type": "introduced",
+              "value": "4.0",
+            },
+            {
+              "type": "fixed",
+              "value": "4.0.8",
+            },
+            {
+              "type": "introduced",
+              "value": "4.1",
+            },
+            {
+              "type": "fixed",
+              "value": "4.1.2",
+            },
+          ],
+          "fixed": "4.1.2",
+          "introduced": "4.1",
+          "packageName": "django",
+          "rangeType": "ECOSYSTEM",
+          "versions": [
+            "3.2",
+            "3.2.1",
+            "3.2.10",
+            "3.2.11",
+            "3.2.12",
+            "3.2.13",
+            "3.2.14",
+            "3.2.15",
+            "3.2.2",
+            "3.2.3",
+            "3.2.4",
+            "3.2.5",
+            "3.2.6",
+            "3.2.7",
+            "3.2.8",
+            "3.2.9",
+            "4.0",
+            "4.0.1",
+            "4.0.2",
+            "4.0.3",
+            "4.0.4",
+            "4.0.5",
+            "4.0.6",
+            "4.0.7",
+            "4.1",
+            "4.1.1",
+            "3.2rc1",
+            "3.2b1",
+            "3.2a1",
+            "1.7a2",
+            "1.4",
+            "1.3",
+            "1.2.1",
+            "1.2",
+            "1.1",
+            "1.0",
+          ],
+        },
+      ],
+      "aliases": [
+        "BIT-django-2022-41323",
+        "CVE-2022-41323",
+        "GHSA-qrw5-5h28-6cmg",
+      ],
+      "cweIds": [],
+      "id": "PYSEC-2022-304",
+      "modified": "2026-06-10T17:01:02.167352048Z",
+      "published": "2022-10-16T06:15:00Z",
+      "severity": [],
+      "severityLabel": null,
+      "severitySource": null,
+      "summary": "",
+    },
+  ],
+}
+`;
+
+exports[`osvQueryPackage over a real service and stubbed OSV HTTP > render-boundary escape (#18) > keeps structuredContent for UBUNTU-CVE-2022-1271 unchanged apart from fixedVersions 1`] = `
+{
+  "queryMeta": {
+    "ecosystem": "Ubuntu:22.04:LTS",
+    "package": "xz-utils",
+    "version": "1.0.0",
+    "vulnCount": 1,
+  },
+  "truncated": false,
+  "vulns": [
+    {
+      "affectedRanges": [
+        {
+          "ecosystem": "Ubuntu:Pro:14.04:LTS",
+          "events": [
+            {
+              "type": "introduced",
+              "value": "0",
+            },
+            {
+              "type": "fixed",
+              "value": "1.6-3ubuntu1+esm1",
+            },
+          ],
+          "fixed": "1.6-3ubuntu1+esm1",
+          "introduced": "0",
+          "packageName": "gzip",
+          "rangeType": "ECOSYSTEM",
+          "versions": [
+            "1.6-2ubuntu1",
+            "1.6-3ubuntu1",
+          ],
+        },
+        {
+          "ecosystem": "Ubuntu:Pro:14.04:LTS",
+          "events": [
+            {
+              "type": "introduced",
+              "value": "0",
+            },
+            {
+              "type": "fixed",
+              "value": "5.1.1alpha+20120614-2ubuntu2.14.04.1+esm1",
+            },
+          ],
+          "fixed": "5.1.1alpha+20120614-2ubuntu2.14.04.1+esm1",
+          "introduced": "0",
+          "packageName": "xz-utils",
+          "rangeType": "ECOSYSTEM",
+          "versions": [
+            "5.1.1alpha+20120614-2ubuntu1",
+            "5.1.1alpha+20120614-2ubuntu2",
+          ],
+        },
+        {
+          "ecosystem": "Ubuntu:Pro:16.04:LTS",
+          "events": [
+            {
+              "type": "introduced",
+              "value": "0",
+            },
+            {
+              "type": "fixed",
+              "value": "1.6-4ubuntu1+esm1",
+            },
+          ],
+          "fixed": "1.6-4ubuntu1+esm1",
+          "introduced": "0",
+          "packageName": "gzip",
+          "rangeType": "ECOSYSTEM",
+          "versions": [
+            "1.6-4ubuntu1",
+          ],
+        },
+        {
+          "ecosystem": "Ubuntu:Pro:16.04:LTS",
+          "events": [
+            {
+              "type": "introduced",
+              "value": "0",
+            },
+            {
+              "type": "fixed",
+              "value": "5.1.1alpha+20120614-2ubuntu2.16.04.1+esm1",
+            },
+          ],
+          "fixed": "5.1.1alpha+20120614-2ubuntu2.16.04.1+esm1",
+          "introduced": "0",
+          "packageName": "xz-utils",
+          "rangeType": "ECOSYSTEM",
+          "versions": [
+            "5.1.1alpha+20120614-2ubuntu2",
+          ],
+        },
+        {
+          "ecosystem": "Ubuntu:18.04:LTS",
+          "events": [
+            {
+              "type": "introduced",
+              "value": "0",
+            },
+            {
+              "type": "fixed",
+              "value": "1.6-5ubuntu1.2",
+            },
+          ],
+          "fixed": "1.6-5ubuntu1.2",
+          "introduced": "0",
+          "packageName": "gzip",
+          "rangeType": "ECOSYSTEM",
+          "versions": [
+            "1.6-5ubuntu1",
+            "1.6-5ubuntu1.1",
+          ],
+        },
+        {
+          "ecosystem": "Ubuntu:18.04:LTS",
+          "events": [
+            {
+              "type": "introduced",
+              "value": "0",
+            },
+            {
+              "type": "fixed",
+              "value": "5.2.2-1.3ubuntu0.1",
+            },
+          ],
+          "fixed": "5.2.2-1.3ubuntu0.1",
+          "introduced": "0",
+          "packageName": "xz-utils",
+          "rangeType": "ECOSYSTEM",
+          "versions": [
+            "5.2.2-1.3",
+          ],
+        },
+        {
+          "ecosystem": "Ubuntu:20.04:LTS",
+          "events": [
+            {
+              "type": "introduced",
+              "value": "0",
+            },
+            {
+              "type": "fixed",
+              "value": "1.10-0ubuntu4.1",
+            },
+          ],
+          "fixed": "1.10-0ubuntu4.1",
+          "introduced": "0",
+          "packageName": "gzip",
+          "rangeType": "ECOSYSTEM",
+          "versions": [
+            "1.10-0ubuntu3",
+            "1.10-0ubuntu4",
+          ],
+        },
+        {
+          "ecosystem": "Ubuntu:20.04:LTS",
+          "events": [
+            {
+              "type": "introduced",
+              "value": "0",
+            },
+            {
+              "type": "fixed",
+              "value": "5.2.4-1ubuntu1.1",
+            },
+          ],
+          "fixed": "5.2.4-1ubuntu1.1",
+          "introduced": "0",
+          "packageName": "xz-utils",
+          "rangeType": "ECOSYSTEM",
+          "versions": [
+            "5.2.4-1",
+            "5.2.4-1ubuntu1",
+          ],
+        },
+        {
+          "ecosystem": "Ubuntu:22.04:LTS",
+          "events": [
+            {
+              "type": "introduced",
+              "value": "0",
+            },
+            {
+              "type": "fixed",
+              "value": "1.10-4ubuntu4",
+            },
+          ],
+          "fixed": "1.10-4ubuntu4",
+          "introduced": "0",
+          "packageName": "gzip",
+          "rangeType": "ECOSYSTEM",
+          "versions": [
+            "1.10-4ubuntu1",
+            "1.10-4ubuntu2",
+            "1.10-4ubuntu3",
+          ],
+        },
+        {
+          "ecosystem": "Ubuntu:22.04:LTS",
+          "events": [
+            {
+              "type": "introduced",
+              "value": "0",
+            },
+            {
+              "type": "fixed",
+              "value": "5.2.5-2ubuntu1",
+            },
+          ],
+          "fixed": "5.2.5-2ubuntu1",
+          "introduced": "0",
+          "packageName": "xz-utils",
+          "rangeType": "ECOSYSTEM",
+          "versions": [
+            "5.2.5-2",
+            "5.2.5-2build1",
+            "5.2.5-2build2",
+          ],
+        },
+      ],
+      "aliases": [],
+      "cweIds": [],
+      "id": "UBUNTU-CVE-2022-1271",
+      "modified": "2026-04-22T13:12:59.333371Z",
+      "published": "2022-04-07T00:00:00Z",
+      "severity": [
+        {
+          "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+          "type": "CVSS_V3",
+        },
+        {
+          "score": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+          "type": "CVSS_V3",
+        },
+        {
+          "score": "medium",
+          "type": "Ubuntu",
+        },
+      ],
+      "severityLabel": "MODERATE",
+      "severitySource": {
+        "score": "medium",
+        "type": "Ubuntu",
+      },
+      "summary": "",
+    },
+  ],
+}
+`;

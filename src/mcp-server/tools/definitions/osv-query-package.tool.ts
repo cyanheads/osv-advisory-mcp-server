@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeAdvisoryInline } from '@/mcp-server/tools/render-escape.js';
 import { getOsvApiService } from '@/services/osv-api/osv-api-service.js';
 
 const RangeEventSchema = z.object({
@@ -35,7 +36,9 @@ const AffectedRangeSchema = z.object({
   fixed: z
     .string()
     .optional()
-    .describe('First safe version — the version to upgrade to (convenience view — see events[]).'),
+    .describe(
+      'The last "fixed" event of this range (convenience view — a multi-interval range carries several; see events[]).',
+    ),
   lastAffected: z
     .string()
     .optional()
@@ -57,11 +60,35 @@ const AffectedRangeSchema = z.object({
 });
 
 const SeverityEntrySchema = z.object({
-  type: z.string().describe('CVSS version: "CVSS_V3", "CVSS_V4", or "CVSS_V2".'),
+  type: z.string().describe('Severity type: "CVSS_V3", "CVSS_V4", "CVSS_V2", or "Ubuntu".'),
   score: z
     .string()
-    .describe('CVSS vector string (e.g. "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L").'),
+    .describe(
+      'CVSS vector string (e.g. "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"), or the Ubuntu priority (e.g. "medium") for type "Ubuntu".',
+    ),
 });
+
+const SeveritySourceSchema = z
+  .object({
+    type: z
+      .enum(['database_specific', 'Ubuntu', 'CVSS_V3', 'CVSS_V4'])
+      .describe(
+        'Source kind: the database_specific.severity label, an Ubuntu priority, or a CVSS vector.',
+      ),
+    score: z
+      .string()
+      .describe(
+        'The published value the label came from: the database_specific.severity text, the Ubuntu priority, or the CVSS vector.',
+      ),
+    computedScore: z
+      .number()
+      .optional()
+      .describe(
+        'CVSS score computed from the vector as published: a CVSS 4.0 vector over every metric group it carries (threat and environmental included), a CVSS 3.x vector with its temporal metrics. Present only for CVSS sources.',
+      ),
+  })
+  .nullable()
+  .describe('The severity entry severityLabel was derived from. Null exactly when the label is.');
 
 const VulnOutputSchema = z.object({
   id: z
@@ -77,17 +104,22 @@ const VulnOutputSchema = z.object({
         'Accepted by nist-nvd-mcp-server for CVSS scores, EPSS, and CISA KEV status.',
     ),
   severity: z
-    .array(SeverityEntrySchema.describe('One CVSS severity entry.'))
-    .describe('CVSS severity entries. May be empty for advisories not yet scored.'),
+    .array(SeverityEntrySchema.describe('One record-level severity entry.'))
+    .describe(
+      'Record-level severity entries (CVSS vectors, Ubuntu priorities). Empty for advisories not yet scored and for advisories that score each affected package separately — severitySource then carries the queried package entry used.',
+    ),
   severityLabel: z
     .string()
     .nullable()
     .describe(
-      'Human-readable severity label ("LOW", "MODERATE", "HIGH", "CRITICAL"). Present on GHSA-sourced records; null otherwise.',
+      'Severity label ("LOW", "MODERATE", "HIGH", "CRITICAL") from the first source that yields one: database_specific.severity, an Ubuntu priority, then the highest CVSS v3/v4 score (0.1–3.9 LOW, 4.0–6.9 MODERATE, 7.0–8.9 HIGH, 9.0–10.0 CRITICAL). Uses the queried package\'s affected-level severity entries when the record-level list is empty. Null when no source yields a label.',
     ),
+  severitySource: SeveritySourceSchema,
   fixedVersions: z
-    .array(z.string().describe('A first-safe version string.'))
-    .describe('First safe version(s) per affected package entry. Empty if no fix exists yet.'),
+    .array(z.string().describe('A version that fixes the vulnerability for the queried package.'))
+    .describe(
+      "Every fixed version the advisory lists for the queried package, in record order. A multi-interval range contributes one per interval (typically one per release line); affectedRanges shows which interval each one closes. Excludes other packages' fixes and GIT commits. Empty when the advisory lists no fix for this package.",
+    ),
   affectedRanges: z
     .array(AffectedRangeSchema.describe('One affected version range.'))
     .describe('Version ranges affected by this vulnerability.'),
@@ -104,7 +136,7 @@ export const osvQueryPackage = tool('osv_query_package', {
   description:
     'Query known vulnerabilities for a single package version across any supported ecosystem. ' +
     'Returns all matching OSV advisories with severity (CVSS vectors), CVE aliases, affected version ranges, ' +
-    'and first safe version. ' +
+    'and the fixed versions listed for the queried package. ' +
     'Use osv_list_ecosystems to validate the ecosystem string before querying — ecosystem strings are ' +
     'case-sensitive exact matches and an invalid value returns an error, not empty results.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
@@ -112,33 +144,27 @@ export const osvQueryPackage = tool('osv_query_package', {
   input: z.object({
     name: z
       .string()
-      .min(1, 'Package name must not be blank — provide the exact package name.')
+      .trim()
       .regex(/\S/, 'Package name must not be blank — provide the exact package name.')
       .describe(
         'Package name as it appears in the ecosystem (e.g. "express", "requests", "serde"). Case-sensitive.',
       ),
     ecosystem: z
       .string()
-      .min(
-        1,
-        'Ecosystem must not be blank — provide a valid ecosystem identifier (see osv_list_ecosystems).',
-      )
+      .trim()
       .regex(
         /\S/,
         'Ecosystem must not be blank — provide a valid ecosystem identifier (see osv_list_ecosystems).',
       )
       .describe(
-        'Ecosystem identifier. Must be an exact match (case-sensitive). ' +
-          'Use osv_list_ecosystems to see valid values. ' +
-          'Examples: "npm", "PyPI", "crates.io", "Go", "Maven", "NuGet".',
+        'Ecosystem identifier. Must be an exact match (case-sensitive). Use osv_list_ecosystems to see valid values. Examples: "npm", "PyPI", "crates.io", "Go", "Maven", "NuGet".',
       ),
     version: z
       .string()
-      .min(1, 'Version must not be blank — provide the exact version string to check.')
+      .trim()
       .regex(/\S/, 'Version must not be blank — provide the exact version string to check.')
       .describe(
-        'Package version to check (e.g. "4.17.1", "3.1.4", "1.0.0"). ' +
-          'Must be an exact version string, not a range.',
+        'Package version to check (e.g. "4.17.1", "3.1.4", "1.0.0"). Must be an exact version string, not a range.',
       ),
   }),
 
@@ -200,7 +226,7 @@ export const osvQueryPackage = tool('osv_query_package', {
     if (result.invalid) {
       throw ctx.fail(
         'invalid_ecosystem',
-        `Ecosystem "${input.ecosystem}" is not recognized by OSV. ${result.message}`,
+        `Ecosystem "${input.ecosystem}" is not recognized by OSV.`,
         { ...ctx.recoveryFor('invalid_ecosystem') },
       );
     }
@@ -227,6 +253,7 @@ export const osvQueryPackage = tool('osv_query_package', {
         aliases: v.aliases,
         severity: v.severity,
         severityLabel: v.severityLabel,
+        severitySource: v.severitySource,
         fixedVersions: v.fixedVersions,
         affectedRanges: v.affectedRanges,
         cweIds: v.cweIds,
@@ -266,49 +293,56 @@ export const osvQueryPackage = tool('osv_query_package', {
       );
     }
 
+    // Every OSV-sourced string passes through the render escape; queryMeta echoes caller input.
+    const esc = escapeAdvisoryInline;
+    const list = (values: string[]) => values.map(esc).join(', ');
     for (const vuln of result.vulns) {
-      lines.push(`## ${vuln.id}`);
+      lines.push(`## ${esc(vuln.id)}`);
       if (vuln.aliases.length > 0) {
-        lines.push(`**Aliases:** ${vuln.aliases.map((a) => `\`${a}\``).join(', ')}`);
+        lines.push(`**Aliases:** ${vuln.aliases.map((a) => `\`${esc(a)}\``).join(', ')}`);
       }
-      lines.push(`**Severity:** ${vuln.severityLabel ?? 'N/A'}`);
-      if (vuln.severity.length > 0) {
-        for (const s of vuln.severity) {
-          lines.push(`- ${s.type}: \`${s.score}\``);
-        }
+      const source = vuln.severitySource;
+      const basis = source
+        ? ` (from ${esc(source.type)} \`${esc(source.score)}\`${source.computedScore !== undefined ? `, computed score ${source.computedScore}` : ''})`
+        : '';
+      lines.push(`**Severity:** ${esc(vuln.severityLabel ?? 'N/A')}${basis}`);
+      for (const s of vuln.severity) {
+        lines.push(`- ${esc(s.type)}: \`${esc(s.score)}\``);
       }
       if (vuln.summary) {
-        lines.push(`**Summary:**\n<advisory_summary>\n${vuln.summary}\n</advisory_summary>`);
+        lines.push(`**Summary:**\n<advisory_summary>\n${esc(vuln.summary)}\n</advisory_summary>`);
       }
-      if (vuln.fixedVersions.length > 0) {
-        lines.push(`**Fix:** Upgrade to ${vuln.fixedVersions.join(', ')}`);
-      } else {
-        lines.push('**Fix:** No fix available yet.');
-      }
+      lines.push(
+        vuln.fixedVersions.length > 0
+          ? `**Fix:** Fixed in ${list(vuln.fixedVersions)}`
+          : '**Fix:** No fixed version listed for this package — see affected ranges.',
+      );
       if (vuln.affectedRanges.length > 0) {
         lines.push('**Affected ranges:**');
         for (const r of vuln.affectedRanges) {
-          const intro = r.introduced !== undefined ? `introduced: ${r.introduced}` : '';
-          const fix = r.fixed !== undefined ? `fixed: ${r.fixed}` : '';
-          const last = r.lastAffected !== undefined ? `last_affected: ${r.lastAffected}` : '';
+          const intro = r.introduced !== undefined ? `introduced: ${esc(r.introduced)}` : '';
+          const fix = r.fixed !== undefined ? `fixed: ${esc(r.fixed)}` : '';
+          const last = r.lastAffected !== undefined ? `last_affected: ${esc(r.lastAffected)}` : '';
           const scalar = [intro, fix, last].filter(Boolean).join(', ');
-          const repoStr = r.repo ? ` repo: ${r.repo}` : '';
+          const repoStr = r.repo ? ` repo: ${esc(r.repo)}` : '';
           const pkgLabel = r.packageName
-            ? `\`${r.packageName}\` (${r.ecosystem})`
+            ? `\`${esc(r.packageName)}\` (${esc(r.ecosystem)})`
             : '_source range_';
-          lines.push(`- ${pkgLabel} [${r.rangeType}]${repoStr}: ${scalar || 'no events'}`);
+          lines.push(`- ${pkgLabel} [${esc(r.rangeType)}]${repoStr}: ${scalar || 'no events'}`);
           if (r.events && r.events.length > 0) {
-            lines.push(`  - events: ${r.events.map((e) => `${e.type}=${e.value}`).join(' → ')}`);
+            lines.push(
+              `  - events: ${r.events.map((e) => `${esc(e.type)}=${esc(e.value)}`).join(' → ')}`,
+            );
           }
           if (r.versions && r.versions.length > 0) {
-            lines.push(`  - versions: ${r.versions.join(', ')}`);
+            lines.push(`  - versions: ${list(r.versions)}`);
           }
         }
       }
       if (vuln.cweIds.length > 0) {
-        lines.push(`**CWE:** ${vuln.cweIds.join(', ')}`);
+        lines.push(`**CWE:** ${list(vuln.cweIds)}`);
       }
-      lines.push(`**Published:** ${vuln.published} | **Modified:** ${vuln.modified}`);
+      lines.push(`**Published:** ${esc(vuln.published)} | **Modified:** ${esc(vuln.modified)}`);
       lines.push('');
     }
 

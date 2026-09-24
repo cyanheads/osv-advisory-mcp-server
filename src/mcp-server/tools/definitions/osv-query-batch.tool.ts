@@ -5,6 +5,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { escapeAdvisoryInline } from '@/mcp-server/tools/render-escape.js';
 import { getOsvApiService } from '@/services/osv-api/osv-api-service.js';
 
 /** Severity ordering for worstSeverity derivation. */
@@ -32,15 +33,12 @@ function worstSeverity(labels: Array<string | null | undefined>): string | null 
 const PackageInputSchema = z.object({
   name: z
     .string()
-    .min(1, 'Package name must not be blank — provide the exact package name for each row.')
+    .trim()
     .regex(/\S/, 'Package name must not be blank — provide the exact package name for each row.')
     .describe('Package name as it appears in the ecosystem.'),
   ecosystem: z
     .string()
-    .min(
-      1,
-      'Ecosystem must not be blank — provide a valid ecosystem identifier for each row (see osv_list_ecosystems).',
-    )
+    .trim()
     .regex(
       /\S/,
       'Ecosystem must not be blank — provide a valid ecosystem identifier for each row (see osv_list_ecosystems).',
@@ -50,7 +48,7 @@ const PackageInputSchema = z.object({
     ),
   version: z
     .string()
-    .min(1, 'Version must not be blank — provide the exact version string for each row.')
+    .trim()
     .regex(/\S/, 'Version must not be blank — provide the exact version string for each row.')
     .describe('Exact version string to check.'),
 });
@@ -66,10 +64,14 @@ const BatchVulnSchema = z.object({
   severityLabel: z
     .string()
     .nullable()
-    .describe('Severity label: "LOW", "MODERATE", "HIGH", "CRITICAL", or null.'),
+    .describe(
+      'Severity label: "LOW", "MODERATE", "HIGH", "CRITICAL", or null. Same derivation as osv_query_package: database_specific.severity, then an Ubuntu priority, then the highest CVSS v3/v4 score, using this row\'s package-level severity entries when the record has none.',
+    ),
   fixedVersions: z
-    .array(z.string().describe('A first-safe version string.'))
-    .describe('First safe version(s) to upgrade to. Empty if no fix exists.'),
+    .array(z.string().describe('A version that fixes the vulnerability for this package.'))
+    .describe(
+      "Every fixed version the advisory lists for this row's package, in record order — one per affected interval, typically one per release line. Excludes other packages' fixes and GIT commits. Empty when the advisory lists no fix for this package.",
+    ),
 });
 
 const PerPackageResultSchema = z.object({
@@ -228,6 +230,8 @@ export const osvQueryBatch = tool('osv_query_batch', {
   format: (result) => {
     const lines: string[] = [];
     const { summary } = result;
+    // OSV-sourced strings pass through the render escape; name/ecosystem/version echo caller input.
+    const esc = escapeAdvisoryInline;
 
     lines.push('## OSV Batch Scan Summary\n');
     lines.push(`| Metric | Value |`);
@@ -252,14 +256,16 @@ export const osvQueryBatch = tool('osv_query_batch', {
         for (const vuln of pkg.vulns) {
           const aliases =
             vuln.aliases.length > 0
-              ? ` — **${vuln.aliases.map((a) => `\`${a}\``).join(', ')}**`
+              ? ` — **${vuln.aliases.map((a) => `\`${esc(a)}\``).join(', ')}**`
               : '';
-          const sev = vuln.severityLabel ? ` [${vuln.severityLabel}]` : '';
+          const sev = vuln.severityLabel ? ` [${esc(vuln.severityLabel)}]` : '';
           const fix =
-            vuln.fixedVersions.length > 0 ? ` → fix: ${vuln.fixedVersions.join(', ')}` : '';
-          lines.push(`- \`${vuln.id}\`${sev}${aliases}${fix}`);
+            vuln.fixedVersions.length > 0
+              ? ` → fix: ${vuln.fixedVersions.map(esc).join(', ')}`
+              : '';
+          lines.push(`- \`${esc(vuln.id)}\`${sev}${aliases}${fix}`);
           if (vuln.summary) {
-            lines.push(`  <advisory_summary>${vuln.summary}</advisory_summary>`);
+            lines.push(`  <advisory_summary>${esc(vuln.summary)}</advisory_summary>`);
           }
         }
         lines.push('');
@@ -289,11 +295,13 @@ export const osvQueryBatch = tool('osv_query_batch', {
       }
     }
 
-    const errors = result.results.filter((r) => r.error !== null);
+    const errors = result.results.filter(
+      (r): r is typeof r & { error: string } => r.error !== null,
+    );
     if (errors.length > 0) {
       lines.push('\n## Errors\n');
       for (const pkg of errors) {
-        lines.push(`- \`${pkg.name}\` @ \`${pkg.version}\` (${pkg.ecosystem}): ${pkg.error}`);
+        lines.push(`- \`${pkg.name}\` @ \`${pkg.version}\` (${pkg.ecosystem}): ${esc(pkg.error)}`);
       }
     }
 
