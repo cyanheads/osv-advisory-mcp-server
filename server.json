@@ -6,7 +6,7 @@
     "url": "https://github.com/cyanheads/osv-advisory-mcp-server",
     "source": "github"
   },
-  "version": "0.1.15",
+  "version": "0.1.16",
   "remotes": [
     {
       "type": "streamable-http",
@@ -19,7 +19,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/osv-advisory-mcp-server",
       "runtimeHint": "npx",
-      "version": "0.1.15",
+      "version": "0.1.16",
       "environmentVariables": [
         {
           "name": "OSV_REQUEST_TIMEOUT_MS",
@@ -59,7 +59,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/osv-advisory-mcp-server",
       "runtimeHint": "npx",
-      "version": "0.1.15",
+      "version": "0.1.16",
       "environmentVariables": [
         {
           "name": "MCP_TRANSPORT_TYPE",

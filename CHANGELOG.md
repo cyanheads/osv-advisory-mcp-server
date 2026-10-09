@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.16](changelog/0.1.x/0.1.16.md) — 2026-10-08
+
+Framework update to mcp-ts-core 0.13.14 — tool error results carry a request ID, the Docker image installs dependencies on the build platform with musl bindings pruned, and MCP Registry entries launch through npx.
+
 ## [0.1.15](changelog/0.1.x/0.1.15.md) — 2026-09-24 · 🛡️ Security
 
 Advisory markup is escaped in content[] text, fixedVersions lists only the queried package's fixes, and severityLabel is derived from Ubuntu priorities and CVSS scores with a new severitySource
