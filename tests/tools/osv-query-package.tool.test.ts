@@ -4,6 +4,7 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { osvQueryPackage } from '@/mcp-server/tools/definitions/osv-query-package.tool.js';
@@ -117,21 +118,22 @@ describe('osvQueryPackage', () => {
     expect(result.queryMeta.vulnCount).toBe(0);
   });
 
-  it('throws invalid_ecosystem via ctx.fail with the contract recovery hint on the wire', async () => {
+  it('fails invalid_ecosystem via ctx.fail with the contract recovery hint on the wire', async () => {
     mockService.queryPackage.mockResolvedValue({ invalid: true, message: 'Invalid ecosystem.' });
-    const ctx = createMockContext({ errors: osvQueryPackage.errors });
-    const input = osvQueryPackage.input.parse({
+    const result = await runToolContract(osvQueryPackage, {
       name: 'lodash',
       ecosystem: 'NPM',
       version: '4.17.1',
     });
     // data.reason + data.recovery.hint must reach the wire (hint is mirrored into content[]).
-    await expect(osvQueryPackage.handler(input, ctx)).rejects.toMatchObject({
-      data: {
-        reason: 'invalid_ecosystem',
-        recovery: { hint: osvQueryPackage.errors![0]!.recovery },
-      },
-    });
+    expect(result.isError).toBe(true);
+    const { error } = result.structuredContent as {
+      error: { code: number; data: { reason: string; recovery: { hint: string } } };
+    };
+    const hint = osvQueryPackage.errors![0]!.recovery;
+    expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
+    expect(error.data).toMatchObject({ reason: 'invalid_ecosystem', recovery: { hint } });
+    expect(contentText(result)).toContain(hint);
   });
 
   it('keeps upstream error text out of the invalid_ecosystem message', async () => {
