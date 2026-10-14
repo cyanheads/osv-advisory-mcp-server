@@ -2,9 +2,9 @@
 
 **Server:** osv-advisory-mcp-server
 **Version:** 0.1.16
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.14`
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
-**MCP SDK:** `@modelcontextprotocol/server` ^2.2.0
+**MCP SDK:** `@modelcontextprotocol/server` ^2.3.1
 **Zod:** ^4.6.5
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -98,7 +98,7 @@ const ServerConfigSchema = z.object({
     .int()
     .positive()
     .default(10)
-    .describe('Max OSV pages osv_query_package follows before marking results truncated.'),
+    .describe('Max OSV pages followed per package in package and batch queries before marking results truncated.'),
 });
 
 let _config: z.infer<typeof ServerConfigSchema> | undefined;
@@ -212,6 +212,7 @@ src/
   mcp-server/
     tools/
       render-escape.ts                  # Render-boundary escape for OSV text in content[]
+      response-pages.ts                 # Bounded replies and stateless JSON-pointer pages
       definitions/
         osv-query-package.tool.ts       # osv_query_package — single package vulnerability lookup
         osv-query-batch.tool.ts         # osv_query_batch — batch dependency audit
@@ -257,7 +258,6 @@ Available skills:
 | `tool-defs-analysis` | Read-only audit of MCP definition language across the surface — voice, leaks, defaults, recovery hints, output descriptions |
 | `security-pass` | Audit server for MCP-flavored security gaps: output injection, scope blast radius, input sinks, tenant isolation |
 | `code-simplifier` | Post-session cleanup against `git diff` — modernize syntax, consolidate duplication, align with the codebase |
-| `devcheck` | Lint, format, typecheck, audit |
 | `polish-docs-meta` | Finalize docs, README, metadata, and agent protocol for shipping |
 | `git-wrapup` | Land working-tree changes as a commit stack — version bump, changelog, verify, commit by concern, release commit on top. No tag, no push to main; opens the release PR when the project declares release PR mode |
 | `release-pr-review` | Review pass on an open release PR — simplifier + correctness review, fixes as ordinary commits on top of the stack, PR body kept in sync. Release PR mode only |

@@ -39,7 +39,7 @@ Primary audience: developers, DevSecOps engineers, and SREs maintaining dependen
 - `GET /v1/vulns/{id}` — full vuln record. Returns 404 with `{ code: 5, message: "Vulnerability not found" }` for unknown IDs. IDs match exactly, including case; Debian, Ubuntu, and SUSE IDs carry a revision suffix (`DSA-5678` is 404, `DSA-5678-1` resolves). There is no list or prefix lookup (`GET /v1/vulns/*` is 404).
 - `/v1/vulns POST` (list-by-ecosystem) — **NOT a real endpoint.** Returns `{ code: 404, message: "The current request is not defined by this API." }`. Confirmed by live probe. `osv_list_ecosystems` returns a static list.
 - Ecosystem strings are case-sensitive exact matches: `npm`, `PyPI`, `crates.io`, `Go`, `Maven`, `NuGet`, `Packagist`, `Pub`, `RubyGems`, `Hex`, `Debian`, `Alpine`, `Ubuntu`, `Azure Linux`, `Linux`, `OSS-Fuzz`, `GIT`, `GitHub Actions`, `Bitnami`, `Android`, `Rocky Linux`, `AlmaLinux`, `Chainguard`, `Wolfi`, `CRAN`, `Hackage`, `SwiftURL`, and others. The supported set is every member of the `$defs.ecosystemName` enum in the OSV schema `validation/schema.json` that `POST /v1/query` accepts, plus `GIT` — 51 of the 52 enum names as of 2026-09-24, with `Red Hat Lightwell` listed in the schema but rejected. `GSD` is a vulnerability-ID prefix, not an ecosystem.
-- Invalid ecosystem returns HTTP 400 with body `{ "code": 3, "message": "invalid ecosystem" }`. This is a real 4xx — live-confirmed. `POST /v1/querybatch` fails the ENTIRE batch with HTTP 400 when any entry has an invalid ecosystem, which is one reason `osv_query_batch` sends one `POST /v1/query` per package instead: a bad ecosystem fails only that row.
+- Invalid ecosystem returns HTTP 400 with body `{ "code": 3, "message": "invalid ecosystem" }`. `POST /v1/querybatch` rejects the submitted group when any entry has an invalid ecosystem; the service isolates a trustworthy indexed rejection and uses bounded per-package recovery for repeated or non-indexed rejections.
 - Severity encoding: `severity` field on a vuln record is an array of `{ type: "CVSS_V2" | "CVSS_V3" | "CVSS_V4" | "Ubuntu", score }` — a vector string, or a lowercase Ubuntu priority. When packages carry differing severities it moves to `affected[].severity`, and the record-level array is then absent. `database_specific.severity` holds a human label on some databases (GHSA `MODERATE`, openEuler `Medium`, curl `High`, Bitnami `Critical`).
 - Affected ranges: `affected[].ranges[].type` is `"SEMVER"`, `"ECOSYSTEM"`, or `"GIT"`. Events are `{ introduced: "..." }` and `{ fixed: "..." }` or `{ last_affected: "..." }`. `fixed` is the first safe version; `last_affected` means no fixed version exists yet.
 - `aliases` field: array of strings on the vuln record — typically CVE IDs (e.g., `["CVE-2020-28500"]`). Some vulns have multiple aliases or none.
@@ -59,13 +59,15 @@ Single service, single API. No shared auth state; every call is anonymous HTTP. 
 
 ## Config
 
-No server-specific env vars required. OSV.dev is keyless and fully public.
+No server-specific env vars are required. OSV.dev is keyless and fully public. The three optional ones below are positive numbers validated at startup by `src/config/server-config.ts`; an invalid value fails startup instead of falling back to the default.
 
-Framework env vars (`MCP_TRANSPORT_TYPE`, `MCP_HTTP_PORT`, `STORAGE_PROVIDER_TYPE`, etc.) apply as normal. No `server-config.ts` needed.
+Framework env vars (`MCP_TRANSPORT_TYPE`, `MCP_HTTP_PORT`, `STORAGE_PROVIDER_TYPE`, etc.) apply as normal.
 
 | Env Var | Required | Description |
 |:--------|:---------|:------------|
 | `OSV_REQUEST_TIMEOUT_MS` | No | HTTP request timeout in milliseconds. Default: 10000. |
+| `OSV_BATCH_CONCURRENCY` | No | Maximum concurrent OSV.dev requests issued by `osv_query_batch`. Default: 10. |
+| `OSV_QUERY_MAX_PAGES` | No | Maximum OSV.dev result pages followed per package by the query tools before marking a result truncated. Default: 10. |
 
 ---
 
@@ -93,15 +95,29 @@ Each step is independently testable. Steps 3 and 4 can be developed in parallel 
 
 ## Design Decisions
 
-### querybatch returns abbreviated records — full detail requires a follow-up call
+### Bounded stateless retrieval
 
-The `POST /v1/querybatch` response contains abbreviated vuln entries (`{ id, modified }`) for each found vulnerability, not full records. This is intentional API design: the batch endpoint is for "does any vuln exist for this package?" triage, not "give me the full advisory text for every vuln in my dependency tree."
+`mcp-server/tools/response-pages.ts` measures the complete dual-surface success reply against a fixed 24,000-byte UTF-8 ceiling, including declared enrichment and its framework trailer. It preserves fitting legacy replies; transmission overflow replaces the full payload with a measured preview and an addressable outline. The flat output schemas make full fields optional and independently render each present `preview`, `overflow`, or `page` arm. The full-branch schemas and examples below describe the unchanged normalized data, not a promise that every call inlines it.
 
-`osv_query_batch` output therefore surfaces: `vulnCount`, abbreviated `vulnIds`, and critically, `aliases` extracted from the full `osv_query_package` response (since querybatch only gives IDs, the `aliases` field is NOT available in batch results). This is a key design tension:
+All three advisory tools accept `page: {path, offset?, revision?}`. `osv_query_package` additionally accepts `page.advisoryId`, using one GET and the same package-scoped normalization as its query path. Re-calls reuse the original input and add the announced page arguments; recipes never duplicate an arbitrary dependency list in the response. Own-property RFC 6901 pointers select normalized nodes. Arrays and objects page entries; strings page Unicode code points. A child too large to inline becomes a deferred pointer, consuming its parent entry so recursive traversal terminates. Binary search measures candidate slices against both response surfaces, including rendered escape expansion.
 
-**Resolution:** `osv_query_batch` calls `POST /v1/querybatch` for the ID list, then for packages with ≤ N vulns (configurable, default: packages with any findings), it fetches full records via individual `GET /v1/vulns/{id}` calls (or `POST /v1/query` per-package) to surface `aliases`. For large batches where this would be too many follow-up calls, the tool surfaces `vulnIds` only and notes that `osv_get_vulnerability` should be called for CVE aliases on specific findings.
+Package previews retain every advisory ID, alias, scoped severity label and fix when their compact view fits, and explicitly identify a complete advisory list. If it does not fit, `/vulns` remains retrievable and the list is disclosed as incomplete. Every affected package, package-less GIT range, ordered event and repeated version remains addressable; normalization is unchanged.
 
-**Simpler path:** For the first implementation, `osv_query_batch` calls `POST /v1/query` per package (not `querybatch`) in parallel with `Promise.allSettled`. This gives full records including `aliases` in one pass, avoids the ID-only limitation, and lets us use proper partial-success semantics. The upstream `querybatch` endpoint adds complexity without benefit when we need full data.
+The initial batch computes and retains the complete scan summary before omitting rows. `/results` pages fetch successive rows on demand; `/results/17/...` fetches only original row 17 and applies its existing brief projection. Neither recomputes whole-batch counts. Other batch continuation pointers fail before upstream work and direct a fresh initial scan. Array entry keys retain original input indices.
+
+Node revisions hash normalized JSON. Supplied stale revisions fail with `stale_page_revision`; unknown pointers fail with `invalid_page_path`, bounded available fields and restart guidance. Batch collection revisions hash the original input order because each row is separately re-fetched; row/subnode revisions hash the addressed value. Re-fetching is explicitly fresh lookup, never historical retention. No database, session state, cache, extra tool, configurable budget or DataCanvas dependency is introduced: traversal does not need a data platform, and neither row spillover nor unbounded section selection segments a huge child or bounds the complete reply.
+
+`truncated` describes the upstream page cap only. Transmission omission never changes clean counts or converts an incomplete row into a confirmed clean result.
+
+### Native preflight with package-scoped enrichment
+
+`osv_query_batch` sends package tuples to `POST /v1/querybatch`, retaining their original positions while following each row's independent `next_page_token` up to `OSV_QUERY_MAX_PAGES`. A token-only page is incomplete. Successful envelopes must contain exactly one valid result per submitted query; malformed or misaligned results become row errors.
+
+Preflight returns only advisory IDs and modification timestamps. Each unique ID is retrieved once per call through `GET /v1/vulns/{id}`. The service shares raw records, then computes each row's brief using its own package matcher, preserving aliases, summary, fixes and scoped severity. This avoids full queries for clean rows and repeated retrieval of shared advisories. A single vulnerable row can require more requests and take longer than a full package query; latency depends on the workload. There is no cross-call cache.
+
+A trustworthy in-range indexed HTTP 400 marks the original row failed and resubmits the remainder once. Another rejection, or a non-indexed validation rejection, switches unresolved rows to bounded `/v1/query` workers, preserving accumulated IDs, the current token and remaining page allowance. Exhausted transient preflight failures become errors for the submitted rows without per-package retry amplification. A detail failure fails every dependent row while unrelated rows succeed.
+
+All outbound work respects `OSV_BATCH_CONCURRENCY` and caller cancellation. The entire scan has a 50-second deadline, bounding compounded retry/page waits below the SDK's default 60 seconds. Deadline-expired unfinished rows carry errors; caller cancellation propagates instead of returning partial success.
 
 ### osv_list_ecosystems is static, not an API call
 
@@ -132,7 +148,7 @@ Entries come from the record-level `severity[]`, or when it is empty, from `affe
 
 ### fixedVersions are scoped to the queried package
 
-`fixedVersions` (package and batch tools) lists every `fixed` event from the SEMVER/ECOSYSTEM ranges of the `affected[]` entries that match the queried package, deduplicated in record order. An entry matches the way OSV.dev indexes it for `/v1/query`: the queried ecosystem equals the entry's ecosystem, its base (text before the first `:`), or for Ubuntu the ecosystem without `:Pro`/`:LTS`; names are equal, PEP 503-normalized for `PyPI`/`Echo:PyPI` (`services/osv-api/affected-match.ts`). It is computed in `queryPackage()`, the only place holding the query, so batch rows inherit it; `osv_get_vulnerability` has no query and returns no `fixedVersions`.
+`fixedVersions` (package and batch tools) lists every `fixed` event from the SEMVER/ECOSYSTEM ranges of the `affected[]` entries that match the queried package, deduplicated in record order. An entry matches the way OSV.dev indexes it for `/v1/query`: the queried ecosystem equals the entry's ecosystem, its base (text before the first `:`), or for Ubuntu the ecosystem without `:Pro`/`:LTS`; names are equal, PEP 503-normalized for `PyPI`/`Echo:PyPI` (`services/osv-api/affected-match.ts`). Both query paths call the same package-scoped normalizer; `osv_get_vulnerability` has no query and returns no `fixedVersions`.
 
 - **Exact-string matching rejected** — `Ubuntu:22.04`, bare `Debian`, and non-normalized PyPI names (`Django`, `PyYAML`) match no entry exactly, which reads as "no fix".
 - **No fallback to other entries** — falling back to advisory-wide fixes recommends another package's release (gzip's fix for an xz-utils query) — the defect this replaced.
@@ -143,6 +159,7 @@ Entries come from the record-level `severity[]`, or when it is empty, from `affe
 OSV strings are upstream-controlled Markdown. `format()` passes every OSV-sourced string through `mcp-server/tools/render-escape.ts`; `structuredContent` stays verbatim. The inline escape (summaries, IDs, versions, URLs, timestamps, error text) turns line breaks into a space and `<` that could start raw HTML or an autolink (before an ASCII letter, `/`, `!`, `?`, or an email local part ending in `@`) into `&lt;`, backslash-escapes a `]` that closes an inline link or image whose destination is not an `http(s)://` URL or that precedes `:`, and backslash-escapes a leading reference-definition `[` or fence run. A `]` an upstream backslash already escapes is left alone: escaping it again would make `\\]`, a literal backslash before a live bracket. The block escape (`details`) applies the same rules line by line, minus the `]:` rule, keeps column-0 fenced code literal except for the frame tags, closes a fence the text leaves open, and stops exempting fences after one opens indented 1–3 spaces.
 
 - **Not the framework's `escapeHtml`** — it re-escapes `&` and quotes, which changes rendered prose (`&lt;script&gt;` would show as entity text).
+- **Finite frame recognition before Markdown processing** — case-insensitive `advisory_summary` and `advisory_text`, opening or closing, render as `[OSV frame-like text: …]`. Recognition permits ASCII/fullwidth brackets and slash and ignores only U+0009–000D, U+0020, U+200B–200F, U+2028–202E, U+2060, U+2066–2069, and U+FEFF between token characters. It runs before line and fence handling so the same rule applies in prose and code. Other strings are never Unicode-normalized; structured output remains verbatim. This bounds token recognition, not semantic prompt injection or all Unicode confusables.
 - **Code spans and indented code are not exempt** — telling them apart safely needs a full CommonMark parse (a code span can end at a list-item boundary), so they take the text rule and show `&lt;` in a rendered view.
 - **Indented fences end the exemption** — a fence opened with 1–3 spaces may sit in a list item that CommonMark closes without a closing fence; a scanner tracking it would misread a later column-0 fence line as an opener and leave raw HTML unescaped. Code after such a fence renders `&lt;`.
 - **Link destinations are allowlisted, not parsed** — `[x](javascript:…)`, its entity-encoded forms (`javascript&#58;`), `data:`, and a range or reference type ending `x](javascript:…)` (which would close the server's own `[SEMVER]` / `[ADVISORY]` label into a link) all lose their `](`; `http(s)://` links in details keep working. Decoding each destination the way a renderer does would need a CommonMark inline parse. The reference-definition check runs after this escape, because `[a](x]: javascript:…` turns into a definition once its `]` is escaped.
@@ -214,7 +231,7 @@ Each `results[i]` corresponds positionally to `queries[i]`. Empty entry is `{}` 
 
 **`GET /v1/vulns/{id}` — not found:** HTTP 404, `{ "code": 5, "message": "Vulnerability not found" }`
 
-**`POST /v1/query` — invalid ecosystem:** HTTP 400, `{ "code": 3, "message": "invalid ecosystem" }` (live-confirmed — real 4xx, not HTTP 200). For `POST /v1/querybatch`, a single invalid ecosystem entry fails the entire batch with HTTP 400 (`"error in query at index N: … invalid ecosystem"`) — no per-entry partial success. `osv_query_batch` does not call querybatch; see the Design Decisions.
+**`POST /v1/query` — invalid ecosystem:** HTTP 400, `{ "code": 3, "message": "invalid ecosystem" }` (live-confirmed — real 4xx, not HTTP 200). For `POST /v1/querybatch`, a single invalid ecosystem rejects the submitted group with HTTP 400 (`"error in query at index N: … invalid ecosystem"`). The service restores positional partial success through bounded rejection recovery; see the Design Decisions.
 
 ### Severity Encoding
 
@@ -355,9 +372,9 @@ z.object({
 })
 ```
 
-**Errors:** None declared. A `packages` array outside 1–1000 entries, or a blank field in any row, fails the input schema (`-32602` `invalid_arguments`) before any OSV call.
+**Errors:** `invalid_page_path` and `stale_page_revision` describe bounded retrieval failures. A `packages` array outside 1–1000 entries, or a blank field in any row, fails the input schema (`-32602` `invalid_arguments`) before any OSV call.
 
-Ecosystems are not pre-validated: each row is its own `POST /v1/query`, so OSV.dev is the authority for every ecosystem string, and an invalid ecosystem (or any other upstream failure) fails only that row — `results[i].error` carries the message and `summary.errorCount` counts it. The rest of the batch completes.
+Ecosystems are not checked against a local allowlist: OSV.dev is the authority. Indexed validation recovery preserves original row positions, while repeated or non-indexed rejection uses per-package workers. `results[i].error` identifies failed rows and `summary.errorCount` counts them. A shared advisory detail failure affects every dependent row. Malformed native envelopes and exhausted transient failures affect the submitted group; unrelated completed rows remain successful. Cancellation is a tool error, never a completed scan.
 
 **Annotations:** `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`
 
@@ -459,7 +476,7 @@ z.object({
 
 ## Known Limitations
 
-- **`aliases` field is absent in batch-only queries.** The `POST /v1/querybatch` endpoint returns only `{ id, modified }` per vuln — no `aliases`. `osv_query_batch` works around this by calling `POST /v1/query` per package in parallel (full records), sacrificing the batch endpoint's network efficiency for data completeness.
+- **Native batch needs advisory enrichment.** `/v1/querybatch` returns only IDs and modification timestamps. The service retrieves unique raw advisories to preserve aliases and remediation context; a detail failure leaves dependent rows failed rather than apparently clean.
 - **No ecosystem listing via API.** `POST /v1/vulns` with an ecosystem filter does not exist (live-confirmed: returns `{ code: 404, message: "The current request is not defined by this API." }`). `osv_list_ecosystems` returns a static list that may drift from the live supported set; `bun run check:ecosystems` reports the drift.
 - **Severity absent for some records.** Some records (e.g. `PYSEC-2022-190`, many `USN-` notices) carry neither `database_specific.severity` nor any severity entry; `severityLabel` and `severitySource` are null for them. A record whose only entries are `CVSS_V2`, malformed vectors, or unrecognized Ubuntu priorities is null too.
 - **No CVSS score field.** OSV carries CVSS as vector strings only (`"CVSS:3.1/AV:N/AC:L/..."`); the service scores them with `@turingpointde/cvss.js` and reports the result as `severitySource.computedScore`.
