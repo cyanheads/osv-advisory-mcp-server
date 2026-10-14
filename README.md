@@ -108,7 +108,7 @@ OSV-specific:
 
 - No API key required — OSV.dev is fully public, keyless, and has no published rate limit
 - `osv_query_batch` combines native batch ID preflight with deduplicated advisory retrieval to preserve `aliases`, scoped fixes, and severity. An indexed validation rejection isolates that row and retries the remaining group once; repeated or non-indexed rejection uses bounded per-package recovery
-- Per-package failures are isolated in `osv_query_batch` — one invalid ecosystem or upstream error surfaces as that row's `error` without failing the whole batch
+- `osv_query_batch` reports failures in each affected row's `error`; invalid-package recovery isolates rows, shared advisory failures affect dependent rows, and preflight failures affect the submitted group
 - Ecosystem discovery via `osv_list_ecosystems` — the OSV schema's ecosystems that OSV.dev accepts, checked against both with `bun run check:ecosystems`
 
 Agent-friendly output:
