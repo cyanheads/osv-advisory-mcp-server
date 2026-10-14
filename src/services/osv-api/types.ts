@@ -95,6 +95,8 @@ export interface RawOsvQueryResponse {
 
 /** Single positional result inside POST /v1/querybatch response. */
 export interface RawOsvBatchResultEntry {
+  /** Independent continuation token for this query's next page. */
+  next_page_token?: string;
   vulns?: RawOsvBatchVulnEntry[];
 }
 

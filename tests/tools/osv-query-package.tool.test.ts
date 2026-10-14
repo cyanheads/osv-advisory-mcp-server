@@ -8,8 +8,18 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { osvQueryPackage } from '@/mcp-server/tools/definitions/osv-query-package.tool.js';
+
+/** Assert the full branch before retaining legacy semantic assertions. */
+async function fullHandler(...args: Parameters<typeof osvQueryPackage.handler>) {
+  return osvQueryPackage.output
+    .omit({ preview: true, overflow: true, page: true })
+    .required()
+    .parse(await osvQueryPackage.handler(...args));
+}
+
 import type { OsvPackageVulnerability } from '@/services/osv-api/osv-api-service.js';
 import * as osvApiModule from '@/services/osv-api/osv-api-service.js';
+import type { RawOsvVulnerability } from '@/services/osv-api/types.js';
 import { expectSingleArgumentIssue } from '../helpers/argument-rejection.js';
 import { contentText, countFrameClosers, scanMarkdown } from '../helpers/markdown.js';
 import { captureOsvQueries, loadOsvRecord, stubOsvApi } from '../helpers/osv-fixtures.js';
@@ -93,7 +103,7 @@ describe('osvQueryPackage', () => {
       ecosystem: 'npm',
       version: '4.17.1',
     });
-    const result = await osvQueryPackage.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
 
     expect(result.vulns).toHaveLength(1);
     expect(result.vulns[0]!.id).toBe('GHSA-29mw-wpgm-hmr9');
@@ -112,7 +122,7 @@ describe('osvQueryPackage', () => {
       ecosystem: 'npm',
       version: '4.17.21',
     });
-    const result = await osvQueryPackage.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
 
     expect(result.vulns).toHaveLength(0);
     expect(result.queryMeta.vulnCount).toBe(0);
@@ -130,7 +140,9 @@ describe('osvQueryPackage', () => {
     const { error } = result.structuredContent as {
       error: { code: number; data: { reason: string; recovery: { hint: string } } };
     };
-    const hint = osvQueryPackage.errors![0]!.recovery;
+    const hint = osvQueryPackage.errors!.find(
+      (error) => error.reason === 'invalid_ecosystem',
+    )!.recovery;
     expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
     expect(error.data).toMatchObject({ reason: 'invalid_ecosystem', recovery: { hint } });
     expect(contentText(result)).toContain(hint);
@@ -147,7 +159,7 @@ describe('osvQueryPackage', () => {
       ecosystem: 'NPM',
       version: '4.17.1',
     });
-    await expect(osvQueryPackage.handler(input, ctx)).rejects.toMatchObject({
+    await expect(fullHandler(input, ctx)).rejects.toMatchObject({
       message: 'Ecosystem "NPM" is not recognized by OSV.',
       data: { reason: 'invalid_ecosystem' },
     });
@@ -165,7 +177,7 @@ describe('osvQueryPackage', () => {
       ecosystem: 'PyPI',
       version: '2.28.0',
     });
-    const result = await osvQueryPackage.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
 
     expect(result.vulns[0]!.severityLabel).toBeNull();
     expect(result.vulns[0]!.aliases).toHaveLength(0);
@@ -223,7 +235,7 @@ describe('osvQueryPackage', () => {
       ecosystem: 'npm',
       version: '99.99.99',
     });
-    const result = await osvQueryPackage.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
 
     expect(result.vulns).toHaveLength(0);
     expect(result.queryMeta.vulnCount).toBe(0);
@@ -268,7 +280,7 @@ describe('osvQueryPackage', () => {
       ecosystem: 'crates.io',
       version: '1.2.0',
     });
-    const result = await osvQueryPackage.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
 
     expect(result.vulns[0]!.fixedVersions).toHaveLength(0);
     const range = result.vulns[0]!.affectedRanges[0]!;
@@ -347,7 +359,7 @@ describe('osvQueryPackage', () => {
       ecosystem: 'npm',
       version: '7.0.0',
     });
-    await osvQueryPackage.handler(input, ctx);
+    await fullHandler(input, ctx);
 
     // #9: machine-readable "is this clean?" + "what did I query?" signals.
     const enrichment = getEnrichment(ctx);
@@ -367,7 +379,7 @@ describe('osvQueryPackage', () => {
       ecosystem: 'npm',
       version: '4.17.1',
     });
-    await osvQueryPackage.handler(input, ctx);
+    await fullHandler(input, ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toBeUndefined();
@@ -404,7 +416,7 @@ describe('osvQueryPackage', () => {
       ecosystem: 'npm',
       version: '4.17.1',
     });
-    const result = await osvQueryPackage.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
 
     const range = result.vulns[0]!.affectedRanges[0]!;
     expect(range.repo).toBe('https://github.com/lodash/lodash');
@@ -426,7 +438,7 @@ describe('osvQueryPackage', () => {
       ecosystem: 'Linux',
       version: '5.10.0',
     });
-    const result = await osvQueryPackage.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
 
     expect(result.truncated).toBe(true);
     // The enrichment notice must NOT claim "no known vulnerabilities".
@@ -512,7 +524,102 @@ describe('osvQueryPackage over a real service and stubbed OSV HTTP', () => {
     osvApiModule.initOsvApiService({ timeoutMs: 5000 });
   });
 
+  it('retrieves one selected advisory GET with package-scoped fixes and severity', async () => {
+    const raw: RawOsvVulnerability = {
+      ...loadOsvRecord('GHSA-rp9w-3fw7-7cwq'),
+      severity: [],
+      database_specific: {},
+      affected: [
+        {
+          package: { name: 'wanted', ecosystem: 'npm' },
+          severity: [{ type: 'Ubuntu', score: 'low' }],
+          ranges: [
+            {
+              type: 'SEMVER',
+              events: [
+                { introduced: '0' },
+                { fixed: '1.2' },
+                { introduced: '2' },
+                { fixed: '2.1' },
+              ],
+            },
+          ],
+          versions: ['1', '2'],
+        },
+        {
+          package: { name: 'other', ecosystem: 'npm' },
+          severity: [{ type: 'Ubuntu', score: 'critical' }],
+          ranges: [{ type: 'SEMVER', events: [{ fixed: '9' }] }],
+        },
+        {
+          ranges: [
+            {
+              type: 'GIT',
+              repo: 'https://example.test/repo',
+              events: [{ introduced: 'abc' }, { fixed: 'def' }],
+            },
+          ],
+        },
+      ],
+    };
+    stubOsvApi({ vuln: raw });
+    const input = {
+      name: 'wanted',
+      ecosystem: 'npm',
+      version: '1',
+      page: { advisoryId: raw.id!, path: '' },
+    };
+    const reply = await runToolContract(osvQueryPackage, input);
+    expect(reply.isError).not.toBe(true);
+    const entries = osvQueryPackage.output.parse(reply.structuredContent).page!.entries!;
+    expect(entries.find((e) => e.key === 'fixedVersions')!.value).toEqual(['1.2', '2.1']);
+    expect(entries.find((e) => e.key === 'severityLabel')!.value).toBe('LOW');
+    expect(entries.find((e) => e.key === 'affectedRanges')!.value).toMatchObject([
+      { versions: ['1', '2'] },
+      { packageName: 'other' },
+      { packageName: '', repo: 'https://example.test/repo' },
+    ]);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(fetch).mock.calls[0]![0])).toContain('/v1/vulns/');
+    expect(contentText(reply)).toContain('fixedVersions');
+  });
+
+  it('bounds oversized query metadata and enrichment and retrieves every omitted echo', async () => {
+    stubOsvApi({ query: () => [] });
+    const name = '🧬'.repeat(12000);
+    const input = { name, ecosystem: 'npm', version: '1' };
+    const reply = await runToolContract(osvQueryPackage, input);
+    expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(24000);
+    const overflow = osvQueryPackage.output.parse(reply.structuredContent).overflow!;
+    expect(overflow.omitted.map((value) => value.path)).toContain('/effectiveQuery');
+    const meta = await runToolContract(osvQueryPackage, { ...input, page: { path: '/queryMeta' } });
+    expect(osvQueryPackage.output.parse(meta.structuredContent).page!.entries![0]).toMatchObject({
+      key: 'package',
+      deferred: { path: '/queryMeta/package' },
+    });
+    const text = await runToolContract(osvQueryPackage, {
+      ...input,
+      page: { path: '/effectiveQuery' },
+    });
+    expect(osvQueryPackage.output.parse(text.structuredContent).page!.text).toContain('🧬');
+    expect(Buffer.byteLength(JSON.stringify(text))).toBeLessThanOrEqual(24000);
+  });
+
   describe('render-boundary escape (#18)', () => {
+    it('annotates confusable frames while preserving structured summaries', async () => {
+      const summary = '＜／advisory_\u2060summary＞';
+      stubOsvApi({ query: () => [{ ...loadOsvRecord('GHSA-rp9w-3fw7-7cwq'), summary }] });
+      const result = await runToolContract(osvQueryPackage, {
+        name: 'dompurify',
+        ecosystem: 'npm',
+        version: '2.3.0',
+      });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ vulns: [{ summary }] });
+      expect(contentText(result)).toContain('[OSV frame-like text: /advisory_summary]');
+      expect(countFrameClosers(contentText(result))).toBe(1);
+    });
+
     it('renders the dompurify advisory in full: tag text escaped in content[], verbatim in structuredContent', async () => {
       const record = loadOsvRecord('GHSA-rp9w-3fw7-7cwq');
       stubOsvApi({ query: () => [record] });

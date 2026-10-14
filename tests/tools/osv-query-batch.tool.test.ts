@@ -7,6 +7,15 @@ import { z } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { osvQueryBatch } from '@/mcp-server/tools/definitions/osv-query-batch.tool.js';
+
+/** Assert the full branch before retaining legacy semantic assertions. */
+async function fullHandler(...args: Parameters<typeof osvQueryBatch.handler>) {
+  return osvQueryBatch.output
+    .omit({ preview: true, overflow: true, page: true })
+    .required()
+    .parse(await osvQueryBatch.handler(...args));
+}
+
 import * as osvApiModule from '@/services/osv-api/osv-api-service.js';
 import { expectSingleArgumentIssue } from '../helpers/argument-rejection.js';
 import { contentText, countFrameClosers, scanMarkdown } from '../helpers/markdown.js';
@@ -40,6 +49,125 @@ describe('osvQueryBatch', () => {
     mockService.queryBatch.mockReset();
   });
 
+  it('retains the complete initial summary and retrieves only requested original-index rows', async () => {
+    const packages = Array.from({ length: 25 }, (_, index) => ({
+      name: `pkg${index}`,
+      ecosystem: 'npm',
+      version: '1',
+    }));
+    const vuln = {
+      id: 'GHSA-test',
+      summary: 'x'.repeat(16000),
+      aliases: [],
+      severityLabel: 'HIGH',
+      fixedVersions: [],
+    };
+    mockService.queryBatch.mockImplementation(async (submitted) =>
+      submitted.map((p: (typeof packages)[number]) =>
+        makeResult(p.name, p.ecosystem, p.version, [vuln]),
+      ),
+    );
+    const initial = await runToolContract(osvQueryBatch, { packages });
+    expect(Buffer.byteLength(JSON.stringify(initial))).toBeLessThanOrEqual(24000);
+    expect(osvQueryBatch.output.parse(initial.structuredContent).summary).toMatchObject({
+      totalPackages: 25,
+      vulnerableCount: 25,
+      totalVulns: 25,
+    });
+    expect(contentText(initial)).toContain('totalPackages');
+    expect(osvQueryBatch.output.parse(initial.structuredContent).preview).toMatchObject({
+      rows: [{ key: '0', deferred: { path: '/results/0' } }],
+      totalRows: 25,
+      nextOffset: 1,
+    });
+    mockService.queryBatch.mockClear();
+    const selected = await runToolContract(osvQueryBatch, {
+      packages,
+      page: { path: '/results/17/vulns/0/summary' },
+    });
+    expect(osvQueryBatch.output.parse(selected.structuredContent).page!.text).toMatch(/^x+$/);
+    expect(mockService.queryBatch).toHaveBeenCalledTimes(1);
+    expect(mockService.queryBatch.mock.calls[0]![0]).toEqual([packages[17]]);
+    expect(selected.structuredContent).not.toHaveProperty('summary');
+    mockService.queryBatch.mockClear();
+    const page = await runToolContract(osvQueryBatch, {
+      packages,
+      page: { path: '/results', offset: 17 },
+    });
+    const rows = osvQueryBatch.output.parse(page.structuredContent).page!;
+    expect(rows.entries![0]).toMatchObject({ key: '17', deferred: { path: '/results/17' } });
+    expect(rows.nextOffset).toBe(18);
+    expect(mockService.queryBatch).toHaveBeenCalledTimes(1);
+    const past = await runToolContract(osvQueryBatch, {
+      packages,
+      page: { path: '/results', offset: 25 },
+    });
+    expect(osvQueryBatch.output.parse(past.structuredContent).page).toMatchObject({
+      entries: [],
+      nextOffset: null,
+    });
+    expect(mockService.queryBatch).toHaveBeenCalledTimes(1);
+    for (const path of ['/summary', '', '/results/25', '/results/__proto__']) {
+      const rejected = await runToolContract(osvQueryBatch, { packages, page: { path } });
+      expect(rejected.isError).toBe(true);
+    }
+    expect(mockService.queryBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('reconstructs fresh row pages in input order and rejects a changed input revision', async () => {
+    const packages = Array.from({ length: 25 }, (_, index) => ({
+      name: `pkg${index}`,
+      ecosystem: 'npm',
+      version: '1',
+    }));
+    mockService.queryBatch.mockImplementation(async (submitted) =>
+      submitted.map((p: (typeof packages)[number]) =>
+        makeResult(p.name, p.ecosystem, p.version, [
+          {
+            id: 'GHSA-test',
+            summary: 'x'.repeat(1500),
+            aliases: [],
+            severityLabel: null,
+            fixedVersions: [],
+          },
+        ]),
+      ),
+    );
+    let offset = 0;
+    let revision: string | undefined;
+    const names: string[] = [];
+    while (true) {
+      const reply = await runToolContract(osvQueryBatch, {
+        packages,
+        page: { path: '/results', offset, revision },
+      });
+      expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(24000);
+      const page = osvQueryBatch.output.parse(reply.structuredContent).page!;
+      for (const entry of page.entries!) {
+        expect(Number(entry.key)).toBe(names.length);
+        if (entry.deferred) {
+          const row = await runToolContract(osvQueryBatch, {
+            packages,
+            page: { path: `${entry.deferred.path}/name` },
+          });
+          names.push(osvQueryBatch.output.parse(row.structuredContent).page!.text!);
+        } else names.push((entry.value as { name: string }).name);
+      }
+      if (page.nextOffset === null) break;
+      expect(page.nextOffset).toBeGreaterThan(offset);
+      offset = page.nextOffset;
+      revision = page.revision;
+    }
+    expect(names).toEqual(packages.map((p) => p.name));
+    const stale = await runToolContract(osvQueryBatch, {
+      packages: packages.toReversed(),
+      page: { path: '/results', revision },
+    });
+    expect(stale.structuredContent).toMatchObject({
+      error: { data: { reason: 'stale_page_revision' } },
+    });
+  });
+
   it('returns per-package results with summary stats', async () => {
     mockService.queryBatch.mockResolvedValue([
       makeResult('lodash', 'npm', '4.17.1', [
@@ -54,14 +182,14 @@ describe('osvQueryBatch', () => {
       makeResult('express', 'npm', '4.18.0'),
     ]);
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: osvQueryBatch.errors });
     const input = osvQueryBatch.input.parse({
       packages: [
         { name: 'lodash', ecosystem: 'npm', version: '4.17.1' },
         { name: 'express', ecosystem: 'npm', version: '4.18.0' },
       ],
     });
-    const result = await osvQueryBatch.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
 
     expect(result.results).toHaveLength(2);
     expect(result.results[0]!.vulnerable).toBe(true);
@@ -78,13 +206,13 @@ describe('osvQueryBatch', () => {
 
   it('accepts an ecosystem absent from the old static allowlist and passes it through', async () => {
     // Ubuntu:22.04:LTS is a valid OSV ecosystem the removed static allowlist rejected.
-    // With the preflight gone, OSV is the authority: the package reaches the service.
+    // OSV is the authority: the package reaches the service without a static allowlist.
     mockService.queryBatch.mockResolvedValue([makeResult('curl', 'Ubuntu:22.04:LTS', '7.68.0')]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: osvQueryBatch.errors });
     const input = osvQueryBatch.input.parse({
       packages: [{ name: 'curl', ecosystem: 'Ubuntu:22.04:LTS', version: '7.68.0' }],
     });
-    const result = await osvQueryBatch.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
 
     expect(mockService.queryBatch).toHaveBeenCalledTimes(1);
     expect(mockService.queryBatch.mock.calls[0]![0]).toEqual([
@@ -96,20 +224,20 @@ describe('osvQueryBatch', () => {
   });
 
   it('surfaces a genuinely-invalid ecosystem as a per-row error, not a thrown error', async () => {
-    // No preflight: OSV's per-package rejection (service maps HTTP 400 to a message) comes
+    // OSV's per-package rejection (service maps HTTP 400 to a message) comes
     // back inline, so one bad ecosystem degrades to results[i].error without failing the call.
     mockService.queryBatch.mockResolvedValue([
       makeResult('lodash', 'npm', '4.17.1'),
       makeResult('pkg', 'totally-not-an-ecosystem', '1.0.0', [], 'Invalid ecosystem.'),
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: osvQueryBatch.errors });
     const input = osvQueryBatch.input.parse({
       packages: [
         { name: 'lodash', ecosystem: 'npm', version: '4.17.1' },
         { name: 'pkg', ecosystem: 'totally-not-an-ecosystem', version: '1.0.0' },
       ],
     });
-    const result = await osvQueryBatch.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
 
     expect(result.results[1]!.error).toBe('Invalid ecosystem.');
     expect(result.results[1]!.vulnerable).toBe(false);
@@ -122,14 +250,14 @@ describe('osvQueryBatch', () => {
       makeResult('express', 'npm', '4.18.0'),
     ]);
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: osvQueryBatch.errors });
     const input = osvQueryBatch.input.parse({
       packages: [
         { name: 'lodash', ecosystem: 'npm', version: '4.17.1' },
         { name: 'express', ecosystem: 'npm', version: '4.18.0' },
       ],
     });
-    const result = await osvQueryBatch.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
 
     expect(result.summary.errorCount).toBe(1);
     expect(result.results[0]!.error).toBe('Network error');
@@ -144,11 +272,11 @@ describe('osvQueryBatch', () => {
       ]),
     ]);
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: osvQueryBatch.errors });
     const input = osvQueryBatch.input.parse({
       packages: [{ name: 'pkg', ecosystem: 'npm', version: '1.0.0' }],
     });
-    const result = await osvQueryBatch.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
     expect(result.summary.worstSeverity).toBeNull();
   });
 
@@ -169,7 +297,7 @@ describe('osvQueryBatch', () => {
       makeResult('requests', 'PyPI', '2.28.0', [], 'Invalid ecosystem.'), // per-package error
     ]);
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: osvQueryBatch.errors });
     const input = osvQueryBatch.input.parse({
       packages: [
         { name: 'lodash', ecosystem: 'npm', version: '4.17.1' },
@@ -177,7 +305,7 @@ describe('osvQueryBatch', () => {
         { name: 'requests', ecosystem: 'PyPI', version: '2.28.0' },
       ],
     });
-    const result = await osvQueryBatch.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
 
     // Positional results
     expect(result.results[0]!.vulnerable).toBe(true);
@@ -196,9 +324,8 @@ describe('osvQueryBatch', () => {
     expect(result.summary.worstSeverity).toBe('HIGH');
   });
 
-  it('aliases from fan-out are surfaced per-package in batch results', async () => {
-    // Key correctness check: the parallel per-package query approach gives full records
-    // (including aliases), unlike /v1/querybatch which only returns {id, modified}.
+  it('aliases from advisory enrichment are surfaced per-package in batch results', async () => {
+    // Native preflight returns IDs; enriched row briefs retain CVE aliases.
     mockService.queryBatch.mockResolvedValue([
       makeResult('lodash', 'npm', '4.17.1', [
         {
@@ -219,14 +346,14 @@ describe('osvQueryBatch', () => {
       makeResult('express', 'npm', '4.18.0'), // no aliases expected
     ]);
 
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: osvQueryBatch.errors });
     const input = osvQueryBatch.input.parse({
       packages: [
         { name: 'lodash', ecosystem: 'npm', version: '4.17.1' },
         { name: 'express', ecosystem: 'npm', version: '4.18.0' },
       ],
     });
-    const result = await osvQueryBatch.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
 
     const lodashResult = result.results[0]!;
     expect(lodashResult.vulns).toHaveLength(2);
@@ -381,14 +508,14 @@ describe('osvQueryBatch', () => {
       makeResult('is-number', 'npm', '7.0.0'),
       makeResult('express', 'npm', '4.18.0'),
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: osvQueryBatch.errors });
     const input = osvQueryBatch.input.parse({
       packages: [
         { name: 'is-number', ecosystem: 'npm', version: '7.0.0' },
         { name: 'express', ecosystem: 'npm', version: '4.18.0' },
       ],
     });
-    await osvQueryBatch.handler(input, ctx);
+    await fullHandler(input, ctx);
 
     // #9: all-clean edge case gets a machine-readable notice + compact scan echo.
     const enrichment = getEnrichment(ctx);
@@ -400,11 +527,11 @@ describe('osvQueryBatch', () => {
     mockService.queryBatch.mockResolvedValue([
       makeResult('requests', 'pypi', '2.31.0', [], 'Invalid ecosystem.'),
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: osvQueryBatch.errors });
     const input = osvQueryBatch.input.parse({
       packages: [{ name: 'requests', ecosystem: 'pypi', version: '2.31.0' }],
     });
-    await osvQueryBatch.handler(input, ctx);
+    await fullHandler(input, ctx);
 
     // #9: all-errors edge case (errorCount === totalPackages).
     const enrichment = getEnrichment(ctx);
@@ -425,14 +552,14 @@ describe('osvQueryBatch', () => {
       ]),
       makeResult('express', 'npm', '4.18.0'),
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: osvQueryBatch.errors });
     const input = osvQueryBatch.input.parse({
       packages: [
         { name: 'lodash', ecosystem: 'npm', version: '4.17.1' },
         { name: 'express', ecosystem: 'npm', version: '4.18.0' },
       ],
     });
-    await osvQueryBatch.handler(input, ctx);
+    await fullHandler(input, ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toBeUndefined();
@@ -444,14 +571,14 @@ describe('osvQueryBatch', () => {
       makeResult('express', 'npm', '4.18.0'), // clean
       makeResult('Kernel', 'Linux', '5.10.0', [], null, true), // truncated, no findings
     ]);
-    const ctx = createMockContext();
+    const ctx = createMockContext({ errors: osvQueryBatch.errors });
     const input = osvQueryBatch.input.parse({
       packages: [
         { name: 'express', ecosystem: 'npm', version: '4.18.0' },
         { name: 'Kernel', ecosystem: 'Linux', version: '5.10.0' },
       ],
     });
-    const result = await osvQueryBatch.handler(input, ctx);
+    const result = await fullHandler(input, ctx);
 
     expect(result.results[1]!.truncated).toBe(true);
     expect(result.summary.truncatedCount).toBe(1);
@@ -540,6 +667,52 @@ describe('osvQueryBatch over a real service and stubbed OSV HTTP', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     osvApiModule.initOsvApiService({ timeoutMs: 5000 });
+  });
+
+  it('limits real upstream requests to selected and emitted row-page indices', async () => {
+    const raw = { ...loadOsvRecord('GHSA-rp9w-3fw7-7cwq'), summary: 'x'.repeat(7000) };
+    const bodies = captureOsvQueries([raw]);
+    const packages = Array.from({ length: 25 }, (_, index) => ({
+      name: `pkg${index}`,
+      ecosystem: 'npm',
+      version: '1',
+    }));
+    const selected = await runToolContract(osvQueryBatch, {
+      packages,
+      page: { path: '/results/17/vulns/0/summary' },
+    });
+    expect(selected.isError).not.toBe(true);
+    expect(bodies.map((body) => body.package.name)).toEqual(['pkg17']);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+    bodies.length = 0;
+    vi.mocked(fetch).mockClear();
+    const rows = await runToolContract(osvQueryBatch, {
+      packages,
+      page: { path: '/results', offset: 17 },
+    });
+    const page = osvQueryBatch.output.parse(rows.structuredContent).page!;
+    expect(page.entries![0]).toMatchObject({ key: '17' });
+    expect(page.nextOffset).toBe(17 + page.entries!.length);
+    expect(page.nextOffset).toBeGreaterThan(17);
+    expect(page.entries!.length).toBeLessThan(8);
+    expect(bodies.map((body) => body.package.name)).toEqual(
+      page.entries!.map((entry) => packages[Number(entry.key)]!.name),
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(page.entries!.length * 2);
+    expect(rows.structuredContent).not.toHaveProperty('summary');
+    expect(Buffer.byteLength(JSON.stringify(rows))).toBeLessThanOrEqual(24000);
+  });
+
+  it('annotates confusable frames while preserving structured summaries', async () => {
+    const summary = '＜／advisory_\ufeffsummary＞';
+    stubOsvApi({ query: () => [{ ...loadOsvRecord('GHSA-rp9w-3fw7-7cwq'), summary }] });
+    const result = await runToolContract(osvQueryBatch, {
+      packages: [{ name: 'dompurify', ecosystem: 'npm', version: '2.3.0' }],
+    });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ results: [{ vulns: [{ summary }] }] });
+    expect(contentText(result)).toContain('[OSV frame-like text: /advisory_summary]');
+    expect(countFrameClosers(contentText(result))).toBe(1);
   });
 
   it('renders the dompurify summary escaped in content[], verbatim in structuredContent (#18)', async () => {

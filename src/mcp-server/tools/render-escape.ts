@@ -2,8 +2,8 @@
  * @fileoverview Render-boundary escape for advisory text in tool `content[]`.
  * OSV strings are upstream-controlled Markdown. Rendered as-is, tag-shaped text becomes raw
  * HTML (a `<template>` in a summary hides the rest of the response), a reference definition
- * or a `](javascript:…)` tail can relink the server's own `[LABEL]` text, and a literal `</advisory_text>` reads like the
- * server's frame closer. These helpers neutralize exactly those constructs and leave the rest
+ * or a `](javascript:…)` tail can relink the server's own `[LABEL]` text, and frame-like tokens
+ * can resemble the server's boundaries. These helpers neutralize those finite constructs and leave the rest
  * of the Markdown alone; `structuredContent` never passes through them. Every step is a
  * single pass over the text (per-line regexes are anchored or fixed-width), so escape time
  * grows linearly with input size.
@@ -36,8 +36,25 @@ const UNSAFE_LINK_CLOSER = /\\[\s\S]|\](?=\((?![ \t]*https?:\/\/))/gi;
  */
 const INLINE_LINK_CLOSER = /\\[\s\S]|\](?=:|\((?![ \t]*https?:\/\/))/gi;
 
-/** A `<` that starts the server's own frame tags, which may not appear verbatim even in code. */
-const FRAME_TAG = /<(?=\/?advisory_(?:summary|text))/gi;
+/** Only these separators are ignored when recognizing the two server-owned frame names. */
+const FRAME_SEPARATOR =
+  '[\\u0009-\\u000d \\u200b-\\u200f\\u2028-\\u202e\\u2060\\u2066-\\u2069\\ufeff]';
+const FRAME_SEPARATORS = new RegExp(FRAME_SEPARATOR, 'g');
+const FRAME_TOKEN = new RegExp(
+  `[<＜]${FRAME_SEPARATOR}*(?:([/／])${FRAME_SEPARATOR}*)?(${['advisory_summary', 'advisory_text']
+    .map((name) => [...name].join(`${FRAME_SEPARATOR}*`))
+    .join('|')})${FRAME_SEPARATOR}*[>＞]`,
+  'gi',
+);
+
+/** Annotate recognized tokens before line/fence handling, including tokens split across lines. */
+function escapeFrameTokens(text: string): string {
+  return text.replace(
+    FRAME_TOKEN,
+    (_match, slash: string | undefined, name: string) =>
+      `[OSV frame-like text: ${slash ? '/' : ''}${name.replace(FRAME_SEPARATORS, '').toLowerCase()}]`,
+  );
+}
 
 /**
  * A line-leading `[` (after indentation and quote/list markers) that could open a link
@@ -98,7 +115,10 @@ function escapeTextLine(line: string, closer: RegExp): string {
  * run are backslash-escaped too.
  */
 export function escapeAdvisoryInline(value: string): string {
-  const line = escapeTextLine(value.replace(LINE_BREAKS, ' '), INLINE_LINK_CLOSER);
+  const line = escapeTextLine(
+    escapeFrameTokens(value).replace(LINE_BREAKS, ' '),
+    INLINE_LINK_CLOSER,
+  );
   const fence = parseFenceOpener(line);
   if (!fence) return line;
   return `${line.slice(0, fence.indent)}\\${line.slice(fence.indent)}`;
@@ -116,9 +136,9 @@ export function escapeAdvisoryBlock(text: string): string {
   const out: string[] = [];
   let fence: Fence | null = null;
   let fencesTrusted = true;
-  for (const line of text.split(/\r\n|\r|\n/)) {
+  for (const line of escapeFrameTokens(text).split(/\r\n|\r|\n/)) {
     if (fence) {
-      out.push(line.replace(FRAME_TAG, '&lt;'));
+      out.push(line);
       if (closesFence(line, fence)) fence = null;
       continue;
     }

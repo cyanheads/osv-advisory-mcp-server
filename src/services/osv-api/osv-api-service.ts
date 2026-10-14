@@ -5,7 +5,7 @@
  * @module services/osv-api/osv-api-service
  */
 
-import type { Context } from '@cyanheads/mcp-ts-core';
+import { type Context, z } from '@cyanheads/mcp-ts-core';
 import { McpError, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { matchesQueriedPackage, type PackageQuery } from './affected-match.js';
@@ -30,7 +30,7 @@ const OSV_BASE_URL = 'https://api.osv.dev';
 /** Default request timeout in milliseconds. */
 const DEFAULT_TIMEOUT_MS = 10_000;
 
-/** Default maximum concurrent per-package queries in {@link OsvApiService.queryBatch}. */
+/** Default maximum concurrent outbound requests in {@link OsvApiService.queryBatch}. */
 const DEFAULT_BATCH_CONCURRENCY = 10;
 
 /**
@@ -47,6 +47,21 @@ const MAX_RETRIES = 2;
 
 /** Base delay for exponential backoff. */
 const BASE_DELAY_MS = 500;
+
+/** Bound all batch stages together below the SDK's default 60-second request deadline. */
+const BATCH_TIMEOUT_MS = 50_000;
+
+/** Validate positional preflight records before missing fields can be interpreted as clean. */
+const BatchResponseSchema = z.object({
+  results: z.array(
+    z.object({
+      vulns: z
+        .array(z.object({ id: z.string().min(1), modified: z.string().optional() }))
+        .optional(),
+      next_page_token: z.string().optional(),
+    }),
+  ),
+});
 
 // ---------------------------------------------------------------------------
 // Normalization helpers
@@ -324,9 +339,9 @@ function getJson<T>(
 
 /** Construction options for {@link OsvApiService}. */
 export interface OsvApiServiceOptions {
-  /** Maximum concurrent per-package queries in {@link OsvApiService.queryBatch}. Defaults to {@link DEFAULT_BATCH_CONCURRENCY}. */
+  /** Maximum concurrent outbound batch requests. Defaults to {@link DEFAULT_BATCH_CONCURRENCY}. */
   batchConcurrency?: number;
-  /** Maximum OSV result pages followed per logical query in {@link OsvApiService.queryPackage}. Defaults to {@link DEFAULT_MAX_QUERY_PAGES}. */
+  /** Maximum OSV result pages followed per package in either query path. Defaults to {@link DEFAULT_MAX_QUERY_PAGES}. */
   maxQueryPages?: number;
   /** HTTP request timeout in milliseconds. Defaults to {@link DEFAULT_TIMEOUT_MS}. */
   timeoutMs?: number;
@@ -429,16 +444,26 @@ export class OsvApiService {
     return normalizeVuln(data as RawOsvVulnerability);
   }
 
+  /** Fetch one advisory and retain the original package matcher for fixes and severity. */
+  async getPackageVulnerability(
+    id: string,
+    query: PackageQuery,
+    ctx: Context,
+  ): Promise<OsvPackageVulnerability | null> {
+    const { status, data } = await getJson<RawOsvVulnerability>(
+      `/v1/vulns/${encodeURIComponent(id)}`,
+      this.timeoutMs,
+      ctx,
+    );
+    if (status === 404) return null;
+    if (status !== 200) throw serviceUnavailable('OSV advisory lookup failed.', { status });
+    return normalizePackageVuln(data as RawOsvVulnerability, query);
+  }
+
   /**
-   * Batch vulnerability query over multiple packages using per-package POST /v1/query.
-   * This approach (vs /v1/querybatch) gives full records including `aliases` in one pass.
-   *
-   * Queries run through a bounded worker pool of at most `batchConcurrency` in-flight
-   * requests, so a large batch (up to 1000 packages) never turns one MCP call into an
-   * unbounded upstream burst. Results are positional (`result[i]` ↔ `packages[i]`).
-   *
-   * Returns per-package results with partial-success semantics:
-   * a per-package error (e.g. invalid ecosystem) is reported inline without aborting the batch.
+   * Positional native ID preflight with per-call raw advisory enrichment. Each row normalizes
+   * shared records against its own package. Validation recovery, pagination and detail work
+   * share a bounded request pool and operation deadline; caller cancellation propagates.
    */
   async queryBatch(
     packages: Array<{ name: string; ecosystem: string; version: string }>,
@@ -453,66 +478,181 @@ export class OsvApiService {
       truncated: boolean;
     }>
   > {
-    // Bounded concurrency: drain packages through a worker pool of at most
-    // `batchConcurrency` in-flight queries instead of fanning out all at once.
-    // Each worker pulls the next index off a shared cursor and writes its outcome
-    // positionally, preserving `settledResults[i]` ↔ `packages[i]` and the same
-    // per-package partial-success semantics as Promise.allSettled.
-    type PackageQueryResult = Awaited<ReturnType<OsvApiService['queryPackage']>>;
-    const settledResults = new Array<PromiseSettledResult<PackageQueryResult>>(packages.length);
-    let cursor = 0;
-    const worker = async (): Promise<void> => {
-      while (cursor < packages.length) {
-        const i = cursor++;
-        // biome-ignore lint/style/noNonNullAssertion: i is bounded by cursor < packages.length
-        const pkg = packages[i]!;
+    const deadline = new AbortController();
+    const timer = setTimeout(
+      () => deadline.abort(new Error('OSV batch exceeded its 50-second deadline.')),
+      BATCH_TIMEOUT_MS,
+    );
+    const signal = AbortSignal.any([ctx.signal, deadline.signal]);
+    const batchCtx = { ...ctx, signal };
+    const rows = packages.map((pkg) => ({
+      pkg,
+      ids: new Set<string>(),
+      pageToken: undefined as string | undefined,
+      pages: 0,
+      error: null as string | null,
+    }));
+    const rawRecords = new Map<string, RawOsvVulnerability>();
+    const detailErrors = new Map<string, string>();
+    const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+    const checkCancelled = () => ctx.signal.throwIfAborted();
+    const bodyFor = (row: (typeof rows)[number]) => ({
+      package: { name: row.pkg.name, ecosystem: row.pkg.ecosystem },
+      version: row.pkg.version,
+      ...(row.pageToken ? { page_token: row.pageToken } : {}),
+    });
+    const pool = async <T>(items: T[], run: (item: T) => Promise<void>) => {
+      let cursor = 0;
+      await Promise.all(
+        Array.from({ length: Math.min(this.batchConcurrency, items.length) }, async () => {
+          while (cursor < items.length) {
+            checkCancelled();
+            if (signal.aborted) break;
+            // biome-ignore lint/style/noNonNullAssertion: cursor is bounded by items.length
+            await run(items[cursor++]!);
+          }
+        }),
+      );
+    };
+    const fallback = async (unresolved: typeof rows) => {
+      await pool(unresolved, async (row) => {
         try {
-          settledResults[i] = {
-            status: 'fulfilled',
-            value: await this.queryPackage(pkg.name, pkg.ecosystem, pkg.version, ctx),
-          };
-        } catch (reason) {
-          settledResults[i] = { status: 'rejected', reason };
+          while (row.pages < this.maxQueryPages) {
+            signal.throwIfAborted();
+            const { status, data } = await postJson<RawOsvQueryResponse>(
+              '/v1/query',
+              bodyFor(row),
+              this.timeoutMs,
+              batchCtx,
+            );
+            if (status === 400) {
+              row.error = (data as OsvApiError).message ?? 'Invalid package query.';
+              return;
+            }
+            if (status !== 200)
+              throw serviceUnavailable(`OSV API returned HTTP ${status}.`, { status });
+            const raw = data as RawOsvQueryResponse;
+            if (
+              !raw ||
+              typeof raw !== 'object' ||
+              Array.isArray(raw) ||
+              (raw.vulns !== undefined && !Array.isArray(raw.vulns)) ||
+              (raw.next_page_token !== undefined && typeof raw.next_page_token !== 'string')
+            ) {
+              throw serviceUnavailable('OSV API returned a malformed package page.');
+            }
+            for (const record of raw.vulns ?? []) {
+              if (!record || typeof record.id !== 'string' || !record.id)
+                throw serviceUnavailable('OSV API returned an advisory without an ID.');
+              row.ids.add(record.id);
+              if (!rawRecords.has(record.id)) rawRecords.set(record.id, record);
+            }
+            row.pages++;
+            row.pageToken = raw.next_page_token || undefined;
+            if (!row.pageToken) break;
+          }
+        } catch (error) {
+          checkCancelled();
+          row.error = message(error);
+        }
+      });
+    };
+    try {
+      let pending = rows;
+      let recoveredIndex = false;
+      while (pending.length) {
+        checkCancelled();
+        try {
+          signal.throwIfAborted();
+          const { status, data } = await postJson<unknown>(
+            '/v1/querybatch',
+            { queries: pending.map(bodyFor) },
+            this.timeoutMs,
+            batchCtx,
+          );
+          if (status === 400) {
+            const error = data as OsvApiError;
+            const indexMatch = /^error in query at index (\d+):/.exec(error.message ?? '');
+            const index = indexMatch ? Number(indexMatch[1]) : -1;
+            if (index >= 0 && index < pending.length && !recoveredIndex) {
+              // biome-ignore lint/style/noNonNullAssertion: OSV index was checked against submitted cardinality
+              pending[index]!.error = error.message;
+              pending = pending.filter((_, i) => i !== index);
+              recoveredIndex = true;
+              continue;
+            }
+            await fallback(pending);
+            break;
+          }
+          const parsed = BatchResponseSchema.safeParse(data);
+          if (status !== 200 || !parsed.success || parsed.data.results.length !== pending.length) {
+            throw serviceUnavailable('OSV API returned a malformed or misaligned batch response.', {
+              status,
+            });
+          }
+          parsed.data.results.forEach((result, i) => {
+            // biome-ignore lint/style/noNonNullAssertion: validated positional cardinality
+            const row = pending[i]!;
+            for (const vuln of result.vulns ?? []) row.ids.add(vuln.id);
+            row.pages++;
+            row.pageToken = result.next_page_token || undefined;
+          });
+          pending = pending.filter((row) => row.pageToken && row.pages < this.maxQueryPages);
+        } catch (error) {
+          checkCancelled();
+          for (const row of pending) row.error = message(error);
+          break;
         }
       }
-    };
-    const poolSize = Math.min(this.batchConcurrency, packages.length);
-    await Promise.all(Array.from({ length: poolSize }, () => worker()));
-
-    return settledResults.map((settled, i) => {
-      // packages and results are same-length (results derives from packages.map)
-      // biome-ignore lint/style/noNonNullAssertion: same-length guarantee
-      const pkg = packages[i]!;
-      if (settled.status === 'rejected') {
-        return {
-          name: pkg.name,
-          ecosystem: pkg.ecosystem,
-          version: pkg.version,
-          vulns: [],
-          error: (settled.reason as Error).message ?? 'Unknown error',
-          truncated: false,
-        };
-      }
-      const result = settled.value;
-      if (result.invalid) {
-        return {
-          name: pkg.name,
-          ecosystem: pkg.ecosystem,
-          version: pkg.version,
-          vulns: [],
-          error: result.message,
-          truncated: false,
-        };
-      }
-      return {
-        name: pkg.name,
-        ecosystem: pkg.ecosystem,
-        version: pkg.version,
-        vulns: result.vulns.map(toBrief),
-        error: null,
-        truncated: result.truncated,
-      };
-    });
+      const ids = [
+        ...new Set(rows.filter((row) => !row.error).flatMap((row) => [...row.ids])),
+      ].filter((id) => !rawRecords.has(id));
+      await pool(ids, async (id) => {
+        try {
+          const { status, data } = await getJson<RawOsvVulnerability>(
+            `/v1/vulns/${encodeURIComponent(id)}`,
+            this.timeoutMs,
+            batchCtx,
+          );
+          const record = data as RawOsvVulnerability;
+          if (status !== 200 || !record || record.id !== id)
+            throw serviceUnavailable(`OSV could not retrieve advisory ${id}.`, { id, status });
+          rawRecords.set(id, record);
+        } catch (error) {
+          checkCancelled();
+          detailErrors.set(id, message(error));
+        }
+      });
+      checkCancelled();
+      return rows.map((row) => {
+        try {
+          const error =
+            row.error ??
+            [...row.ids].map((id) => detailErrors.get(id)).find((value) => value !== undefined) ??
+            (signal.aborted &&
+            (row.pages === 0 ||
+              (row.pageToken && row.pages < this.maxQueryPages) ||
+              [...row.ids].some((id) => !rawRecords.has(id)))
+              ? message(signal.reason)
+              : null);
+          if (error) return { ...row.pkg, vulns: [], error, truncated: Boolean(row.pageToken) };
+          const vulns = [...row.ids].map((id) => {
+            // biome-ignore lint/style/noNonNullAssertion: all IDs have records or a detail error above
+            return toBrief(normalizePackageVuln(rawRecords.get(id)!, row.pkg));
+          });
+          return { ...row.pkg, vulns, error: null, truncated: Boolean(row.pageToken) };
+        } catch (error) {
+          return {
+            ...row.pkg,
+            vulns: [],
+            error: message(error),
+            truncated: Boolean(row.pageToken),
+          };
+        }
+      });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 

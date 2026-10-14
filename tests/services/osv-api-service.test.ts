@@ -200,9 +200,12 @@ describe('OsvApiService', () => {
       vi.stubGlobal(
         'fetch',
         mockFetch([
-          { status: 200, body: QUERY_RESPONSE_WITH_VULN }, // lodash
-          { status: 200, body: EMPTY_QUERY_RESPONSE }, // express (clean)
-          { status: 400, body: INVALID_ECOSYSTEM_RESPONSE }, // bad ecosystem
+          {
+            status: 400,
+            body: { code: 3, message: 'error in query at index 2: Invalid ecosystem.' },
+          },
+          { status: 200, body: { results: [{ vulns: [{ id: VULN_DETAIL_RESPONSE.id }] }, {}] } },
+          { status: 200, body: VULN_DETAIL_RESPONSE },
         ]),
       );
 
@@ -226,14 +229,13 @@ describe('OsvApiService', () => {
       expect(results[2]!.error).toBeTruthy();
     });
 
-    it('surfaces CVE aliases in batch brief from full per-package query', async () => {
-      // /v1/querybatch returns only {id, modified} — no aliases.
-      // The implementation uses parallel /v1/query calls to get full records including aliases.
-      // This test verifies aliases flow through queryBatch → toBrief.
+    it('surfaces CVE aliases in batch brief from advisory enrichment', async () => {
+      // Native preflight supplies IDs; the raw advisory GET supplies aliases.
       vi.stubGlobal(
         'fetch',
         mockFetch([
-          { status: 200, body: QUERY_RESPONSE_WITH_VULN }, // lodash with CVE alias
+          { status: 200, body: { results: [{ vulns: [{ id: VULN_DETAIL_RESPONSE.id }] }] } },
+          { status: 200, body: VULN_DETAIL_RESPONSE },
         ]),
       );
 
@@ -266,15 +268,23 @@ describe('OsvApiService', () => {
       // A positional bug (writing results in completion order) would scramble the parities.
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockImplementation((_url: string, init: RequestInit) => {
-          const idx = Number((JSON.parse(String(init.body)).package.name as string).slice(1));
-          const vulnerable = idx % 2 === 0;
+        vi.fn().mockImplementation((url: string, init: RequestInit) => {
+          if (new URL(url).pathname === '/v1/querybatch') {
+            const queries = JSON.parse(String(init.body)).queries as Array<{
+              package: { name: string };
+            }>;
+            return Promise.resolve(
+              jsonResponse(200, {
+                results: queries.map(({ package: pkg }) =>
+                  Number(pkg.name.slice(1)) % 2 === 0 ? { vulns: [{ id: pkg.name }] } : {},
+                ),
+              }),
+            );
+          }
+          const idx = Number(new URL(url).pathname.split('/').at(-1)!.slice(1));
           return new Promise((resolve) =>
             setTimeout(
-              () =>
-                resolve(
-                  jsonResponse(200, vulnerable ? QUERY_RESPONSE_WITH_VULN : EMPTY_QUERY_RESPONSE),
-                ),
+              () => resolve(jsonResponse(200, { ...VULN_DETAIL_RESPONSE, id: `p${idx}` })),
               total - idx,
             ),
           );
@@ -300,13 +310,23 @@ describe('OsvApiService', () => {
       let maxInFlight = 0;
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockImplementation(() => {
+        vi.fn().mockImplementation((url: string, init: RequestInit) => {
+          if (new URL(url).pathname === '/v1/querybatch') {
+            const queries = JSON.parse(String(init.body)).queries as Array<{
+              package: { name: string };
+            }>;
+            return Promise.resolve(
+              jsonResponse(200, {
+                results: queries.map(({ package: pkg }) => ({ vulns: [{ id: pkg.name }] })),
+              }),
+            );
+          }
           inFlight++;
           maxInFlight = Math.max(maxInFlight, inFlight);
           return new Promise((resolve) =>
             setTimeout(() => {
               inFlight--;
-              resolve(jsonResponse(200, EMPTY_QUERY_RESPONSE));
+              resolve(jsonResponse(200, { id: new URL(url).pathname.split('/').at(-1) }));
             }, 5),
           );
         }),
@@ -327,13 +347,23 @@ describe('OsvApiService', () => {
       let maxInFlight = 0;
       vi.stubGlobal(
         'fetch',
-        vi.fn().mockImplementation(() => {
+        vi.fn().mockImplementation((url: string, init: RequestInit) => {
+          if (new URL(url).pathname === '/v1/querybatch') {
+            const queries = JSON.parse(String(init.body)).queries as Array<{
+              package: { name: string };
+            }>;
+            return Promise.resolve(
+              jsonResponse(200, {
+                results: queries.map(({ package: pkg }) => ({ vulns: [{ id: pkg.name }] })),
+              }),
+            );
+          }
           inFlight++;
           maxInFlight = Math.max(maxInFlight, inFlight);
           return new Promise((resolve) =>
             setTimeout(() => {
               inFlight--;
-              resolve(jsonResponse(200, EMPTY_QUERY_RESPONSE));
+              resolve(jsonResponse(200, { id: new URL(url).pathname.split('/').at(-1) }));
             }, 3),
           );
         }),
@@ -1031,14 +1061,21 @@ describe('OsvApiService', () => {
       expect(result.truncated).toBe(true);
     });
 
-    it('batch rows inherit truncation from the per-package query', async () => {
+    it('batch rows preserve truncation on independent native pages', async () => {
       vi.stubGlobal(
         'fetch',
         vi.fn().mockImplementation((_url: string, init: RequestInit) => {
-          const name = JSON.parse(String(init.body)).package.name as string;
+          const queries = JSON.parse(String(init.body)).queries as Array<{
+            package: { name: string };
+          }>;
           // "Kernel" always paginates (never resolves); "express" is clean in one page.
-          const body = name === 'Kernel' ? { next_page_token: 'more' } : {};
-          return Promise.resolve(jsonResponse(200, body));
+          return Promise.resolve(
+            jsonResponse(200, {
+              results: queries.map(({ package: pkg }) =>
+                pkg.name === 'Kernel' ? { next_page_token: 'more' } : {},
+              ),
+            }),
+          );
         }),
       );
       const svc = new OsvApiService({ timeoutMs: 5000, maxQueryPages: 2, batchConcurrency: 2 });

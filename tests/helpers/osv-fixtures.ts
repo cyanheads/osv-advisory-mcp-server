@@ -29,15 +29,30 @@ export interface QueryRequestBody {
 }
 
 /**
- * Stub global fetch so every `POST /v1/query` answers `records`; returns the
- * request bodies sent, in order.
+ * Serve full queries, native ID preflight and advisory GETs from `records`;
+ * return submitted package query bodies in order.
  */
 export function captureOsvQueries(records: RawOsvVulnerability[]): QueryRequestBody[] {
   const bodies: QueryRequestBody[] = [];
   vi.stubGlobal(
     'fetch',
-    vi.fn((_url: string | URL, init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)) as QueryRequestBody);
+    vi.fn((url: string | URL, init?: RequestInit) => {
+      if (new URL(String(url)).pathname.startsWith('/v1/vulns/')) {
+        const id = decodeURIComponent(new URL(String(url)).pathname.slice('/v1/vulns/'.length));
+        return Promise.resolve(Response.json(records.find((record) => record.id === id)));
+      }
+      const body = JSON.parse(String(init?.body));
+      if (body.queries) {
+        bodies.push(...body.queries);
+        return Promise.resolve(
+          Response.json({
+            results: body.queries.map(() => ({
+              vulns: records.map(({ id, modified }) => ({ id, modified })),
+            })),
+          }),
+        );
+      }
+      bodies.push(body as QueryRequestBody);
       return Promise.resolve(Response.json({ vulns: records }));
     }),
   );
@@ -45,23 +60,38 @@ export function captureOsvQueries(records: RawOsvVulnerability[]): QueryRequestB
 }
 
 /**
- * Stub global fetch with an OSV API fake: `POST /v1/query` answers with the records
- * `query` returns for the queried package, `GET /v1/vulns/{id}` with `vuln`.
+ * Serve package queries and native ID preflight with `query`'s records, retaining
+ * raw advisories for subsequent GETs. An explicit `vuln` overrides detail lookup.
  */
 export function stubOsvApi(responders: {
   query?: (pkg: QueriedPackage) => RawOsvVulnerability[];
   vuln?: RawOsvVulnerability;
 }): void {
+  const records = new Map<string, RawOsvVulnerability>();
   vi.stubGlobal(
     'fetch',
     vi.fn((url: string | URL, init?: RequestInit) => {
       const path = new URL(String(url)).pathname;
+      if (path === '/v1/querybatch' && responders.query) {
+        const body = JSON.parse(String(init?.body)) as { queries: QueryRequestBody[] };
+        return Promise.resolve(
+          Response.json({
+            results: body.queries.map((query) => {
+              const vulns = responders.query!(query.package);
+              for (const record of vulns) records.set(record.id!, record);
+              return { vulns: vulns.map(({ id, modified }) => ({ id, modified })) };
+            }),
+          }),
+        );
+      }
       if (path === '/v1/query' && responders.query) {
         const body = JSON.parse(String(init?.body)) as { package: QueriedPackage };
         return Promise.resolve(Response.json({ vulns: responders.query(body.package) }));
       }
-      if (path.startsWith('/v1/vulns/') && responders.vuln) {
-        return Promise.resolve(Response.json(responders.vuln));
+      if (path.startsWith('/v1/vulns/')) {
+        const record =
+          responders.vuln ?? records.get(decodeURIComponent(path.slice('/v1/vulns/'.length)));
+        if (record) return Promise.resolve(Response.json(record));
       }
       return Promise.reject(new Error(`Unexpected OSV request: ${init?.method ?? 'GET'} ${path}`));
     }),
