@@ -1,6 +1,6 @@
 # osv-advisory-mcp-server - Directory Structure
 
-Generated on: 2026-10-09 06:30:38
+Generated on: 2026-10-14 14:36:37
 
 ```text
 osv-advisory-mcp-server/
@@ -25,6 +25,7 @@ osv-advisory-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.2.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -150,7 +151,8 @@ osv-advisory-mcp-server/
 │   │       │   ├── osv-list-ecosystems.tool.ts
 │   │       │   ├── osv-query-batch.tool.ts
 │   │       │   └── osv-query-package.tool.ts
-│   │       └── render-escape.ts
+│   │       ├── render-escape.ts
+│   │       └── response-pages.ts
 │   ├── services/
 │   │   └── osv-api/
 │   │       ├── affected-match.ts
@@ -177,7 +179,8 @@ osv-advisory-mcp-server/
 │   │       ├── PYSEC-2022-304.json
 │   │       ├── UBUNTU-CVE-2022-1271.json
 │   │       ├── UBUNTU-CVE-2024-3094.json
-│   │       └── UBUNTU-CVE-2025-31115.json
+│   │       ├── UBUNTU-CVE-2025-31115.json
+│   │       └── V8-FRESHNESS.json
 │   ├── helpers/
 │   │   ├── argument-rejection.ts
 │   │   ├── markdown.ts
@@ -188,7 +191,8 @@ osv-advisory-mcp-server/
 │   │   └── check-ecosystems.test.ts
 │   ├── services/
 │   │   ├── affected-match.test.ts
-│   │   └── osv-api-service.test.ts
+│   │   ├── osv-api-service.test.ts
+│   │   └── osv-native-batch.test.ts
 │   └── tools/
 │       ├── __snapshots__/
 │       │   ├── osv-get-vulnerability.tool.test.ts.snap
@@ -196,6 +200,7 @@ osv-advisory-mcp-server/
 │       │   └── osv-query-package.tool.test.ts.snap
 │       ├── osv-get-vulnerability.tool.test.ts
 │       ├── osv-list-ecosystems.tool.test.ts
+│       ├── osv-native-batch.tool.test.ts
 │       ├── osv-query-batch.tool.test.ts
 │       ├── osv-query-package.tool.test.ts
 │       └── render-escape.test.ts

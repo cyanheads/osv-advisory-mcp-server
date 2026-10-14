@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-10-14 · ⚠️ Breaking
+
+Bounded advisory retrieval and native batch scans
+
 ## [0.1.16](changelog/0.1.x/0.1.16.md) — 2026-10-08
 
 Framework update to mcp-ts-core 0.13.14 — tool error results carry a request ID, the Docker image installs dependencies on the build platform with musl bindings pruned, and MCP Registry entries launch through npx.
