@@ -29,76 +29,47 @@
 
 ## Overview
 
-Vulnerability data from OSV.dev, the open-source vulnerability database. Query a single package version, batch-audit a full dependency list or SBOM, and fetch complete advisory records with CVSS severity, CVE aliases, and affected version ranges. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+Vulnerability data from OSV.dev, the open-source vulnerability database. Query a single package version, batch-audit a full dependency list or SBOM, and fetch complete advisory records with CVSS severity, CVE aliases, and affected version ranges.
 
 ### Tools
 
 | Tool | Description |
 |:---|:---|
 | `osv_query_package` | Query known vulnerabilities for a single package version by name, ecosystem, and version |
-| `osv_query_batch` | Batch vulnerability query for an array of package tuples — one call for a full dependency list or SBOM audit |
+| `osv_query_batch` | Audit up to 1000 package versions in one call — a full dependency list or SBOM |
 | `osv_get_vulnerability` | Fetch the full advisory record for a single OSV vulnerability ID |
 | `osv_list_ecosystems` | Return the list of supported ecosystem identifier strings |
 
 ## Capability reference
 
-### Bounded advisory responses
-
-The three advisory tools return at most **24,000 UTF-8 bytes per serialized `CallToolResult`**, including `content[]`, `structuredContent`, and enrichment. Fitting results keep their usual shape. Larger replies carry `overflow` with omitted pointers and re-call arguments; `preview` contains only the compact values that fit. Package previews state `advisoryListComplete: true` when every ID, alias, scoped severity label, and fix is included. Without that preview, retrieve `/vulns` before treating the advisory list as complete. Initial batch overflow always retains the complete scan `summary`.
-
-Reuse the original input and **add the returned `page` arguments**. `page.path` is an RFC 6901 JSON Pointer; `offset` defaults to zero. Array offsets count entries, object offsets count keys in source order, and text offsets count Unicode code points. Each reply includes `type`, `total`, `revision`, and `nextOffset`; continue until `nextOffset` is null. An oversized entry carries `deferred.path` instead of its value: retrieve that child separately, then continue the parent. Structured values remain verbatim.
-
-```json
-{"id":"V8-FRESHNESS","page":{"path":"/affected/0/versions","offset":0}}
-{"id":"V8-FRESHNESS","page":{"path":"/details","offset":0}}
-{"name":"Django","ecosystem":"PyPI","version":"3.2.0","page":{"advisoryId":"PYSEC-2022-190","path":"/affectedRanges/0/versions","offset":0}}
-```
-
-Package collection pages re-query one package. `page.advisoryId` fetches one announced advisory by ID and preserves the original package matcher for fixes and severity. Batch pages accept `/results` or `/results/<original-index>/...` with the original `packages` array: row pages fetch only successive needed rows, while a selected descendant queries only that row. They retain original indices and do not recompute aggregate statistics. Other batch pointers require a fresh initial scan.
-
-Every page is a fresh lookup, **not a saved historical snapshot**. A supplied node `revision` rejects changed data with `stale_page_revision`; restart that node at offset zero without a revision. Batch collection revisions identify the original input order; selected row and descendant revisions identify their fresh normalized values. Unknown paths fail with `invalid_page_path` and bounded recovery guidance. Paths are limited to 1,024 characters, offsets must be nonnegative integers, and the advisory selector is accepted only by `osv_query_package`.
-
-Transmission overflow is separate from OSV pagination `truncated`. Neither omitted data nor a truncated empty list confirms that a package is clean.
-
 ### `osv_query_package` <sub>tool</sub>
 
-- Accepts `name`, `ecosystem` (case-sensitive exact match), and `version` — an exact version string, not a range
-- Surrounding whitespace is trimmed from all three before the request, and `queryMeta` echoes the trimmed values; interior whitespace (`Rocky Linux`) is kept. Blank or whitespace-only values are rejected before any upstream call
-- Returns matching advisories with OSV IDs, CVE `aliases`, severity entries (CVSS vectors, Ubuntu priorities), `severityLabel` with its `severitySource`, `fixedVersions`, `affectedRanges` (SEMVER/ECOSYSTEM/GIT), and `cweIds`
-- `fixedVersions` lists every fix the advisory records for the queried package (one per affected interval), matched the way OSV matches the query — release-suffixed ecosystems (`Debian` → `Debian:12`, `Ubuntu:22.04` → `Ubuntu:22.04:LTS`) and PEP 503 names on PyPI. Other packages' fixes and GIT commits stay out of it; `affectedRanges` keeps every range
-- `truncated: true` means OSV paginated beyond `OSV_QUERY_MAX_PAGES` (default 10) — an empty `vulns` array with `truncated: true` is NOT a confirmed clean result
-- Typed `invalid_ecosystem` error when the ecosystem string isn't recognized by OSV — call `osv_list_ecosystems` for valid values, then retry
-- `aliases` on each vuln chain to `nist-nvd-mcp-server` for CVSS base scores, EPSS exploitation probability, and CISA KEV status
+- `name`, `ecosystem` (case-sensitive exact match), and `version` — an exact version, not a range
+- Each advisory carries CVE `aliases`, `severityLabel` with its `severitySource`, the queried package's `fixedVersions`, `affectedRanges`, and `cweIds`
+- `truncated: true` means OSV had more pages than `OSV_QUERY_MAX_PAGES` follows, so an empty `vulns` list is not a clean result; an unrecognized ecosystem fails as `invalid_ecosystem`
 
 ---
 
 ### `osv_query_batch` <sub>tool</sub>
 
-- Accepts an array of `{name, ecosystem, version}` tuples, 1–1000 per call; `results[i]` corresponds positionally to `packages[i]`
-- Each row's fields are trimmed of surrounding whitespace the same way as `osv_query_package`, and `results[i]` echoes the trimmed values; a blank field in any row rejects the call
-- Per-package `vulnerable`, `vulnCount`, `vulns` (with `aliases`, `severityLabel`, and the row package's `fixedVersions`), and a nullable `error` — invalid-package recovery isolates rows; a failed shared advisory affects its dependent rows, while a failed preflight affects the submitted group
-- Aggregate `summary`: `totalPackages`, `vulnerableCount`, `cleanCount`, `truncatedCount`, `errorCount`, `totalVulns`, `worstSeverity`
-- `cleanCount` excludes truncated rows — a per-package `truncated: true` result is never counted clean even with zero findings
-- Native `/v1/querybatch` preflight follows independent row tokens, then fetches each unique advisory once per call; clean rows need no advisory request. Raw records are shared, while fixes and severity are derived separately for each package
-- All outbound stages respect `OSV_BATCH_CONCURRENCY` (default 10) and caller cancellation. The complete scan has a 50-second deadline; unfinished rows carry errors
+- 1–1000 `{name, ecosystem, version}` tuples per call; `results[i]` matches `packages[i]`
+- Each row carries `vulnerable`, `vulnCount`, `vulns`, `truncated`, and `error`; a failure lands in the affected rows' `error` instead of failing the call
+- `summary` totals the scan (`vulnerableCount`, `cleanCount`, `truncatedCount`, `errorCount`, `totalVulns`, `worstSeverity`), and truncated rows never count as clean. The whole scan has a 50-second deadline
 
 ---
 
 ### `osv_get_vulnerability` <sub>tool</sub>
 
-- Accepts one exact, complete advisory ID from any OSV source database, matched case-sensitively — `GHSA-` (GitHub), `PYSEC-` (PyPI), `RUSTSEC-` (Rust), `GO-` (Go), `DSA-`/`DLA-` (Debian), `USN-` (Ubuntu), `RHSA-` (Red Hat), `CVE-`, and the rest. IDs come from `osv_query_package` / `osv_query_batch` results
-- Surrounding whitespace is trimmed before the request (`" GHSA-29mw-wpgm-hmr9 "` resolves); input that can't be an OSV ID (wildcards, a bare package name, a prefix with no ID) is rejected before any upstream call, with a message naming the expected form
-- Returns the full record — `details` text, all CVE `aliases`, every affected package with its version ranges, ordered `fixed` events, and any package-level severity, severity entries with `severityLabel` and `severitySource`, `cweIds`, and `references` (ADVISORY, FIX, REPORT, etc.)
-- Typed `vulnerability_not_found` error when the ID doesn't exist in OSV — the recovery covers case and the Debian/Ubuntu/SUSE revision suffix (`DSA-5678-1`, not `DSA-5678`); a CVE-style alias may still resolve via `nist-nvd-mcp-server`
-- `withdrawn` is present only on retracted advisories — treat as no longer active, not as an error
+- One exact advisory ID from any OSV source (`GHSA-`, `PYSEC-`, `RUSTSEC-`, `GO-`, `DSA-`, `USN-`, `CVE-`, …), matched case-sensitively
+- Full record: `details`, `aliases`, every affected package with its ranges and fixes, `severityLabel`, `cweIds`, and `references`
+- An unknown ID fails as `vulnerability_not_found`; `withdrawn` is set only on retracted advisories
 
 ---
 
 ### `osv_list_ecosystems` <sub>tool</sub>
 
-- No input; returns the static list of valid `ecosystem` identifier strings plus an advisory `note` on currency
-- Ecosystem strings are case-sensitive exact matches — `"pypi"` fails where `"PyPI"` succeeds
-- Every ecosystem in the OSV schema's `ecosystemName` enum that OSV.dev accepts at query time, plus `GIT` (accepted via the `ecosystemWithSuffix` pattern); a schema ecosystem OSV.dev still rejects is left out. The `note` carries the verification date; the list may lag later additions
+- No input; returns the `ecosystems` strings the query tools accept, plus a `note` with the date the list was last checked against OSV.dev
+- Strings are case-sensitive exact matches: `PyPI` works, `pypi` fails
 
 ## Features
 
@@ -106,18 +77,16 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 OSV-specific:
 
-- No API key required — OSV.dev is fully public, keyless, and has no published rate limit
-- `osv_query_batch` combines native batch ID preflight with deduplicated advisory retrieval to preserve `aliases`, scoped fixes, and severity. An indexed validation rejection isolates that row and retries the remaining group once; repeated or non-indexed rejection uses bounded per-package recovery
-- `osv_query_batch` reports failures in each affected row's `error`; invalid-package recovery isolates rows, shared advisory failures affect dependent rows, and preflight failures affect the submitted group
-- Ecosystem discovery via `osv_list_ecosystems` — the OSV schema's ecosystems that OSV.dev accepts, checked against both with `bun run check:ecosystems`
+- No API key required — OSV.dev is public and keyless, with no published rate limit
+- `osv_query_batch` finds matching advisory IDs through OSV's `/v1/querybatch`, then fetches each unique advisory once, so batch rows carry the full records (`aliases` included) the batch endpoint omits; requests are capped by `OSV_BATCH_CONCURRENCY`
+- `osv_list_ecosystems` is checked against the live OSV schema and API with `bun run check:ecosystems`
 
 Agent-friendly output:
 
-- `aliases` (CVE IDs) surfaced on every vuln entry — the composition point for chaining to `nist-nvd-mcp-server` for CVSS base scores, EPSS, and CISA KEV status
-- `severityLabel` from the first source that yields one: `database_specific.severity` (GHSA, openEuler, and others; `Medium` reads as `MODERATE`), an Ubuntu priority, then the highest CVSS v3/v4 score computed from the vector as published (every metric group of a CVSS 4.0 vector; base and temporal for CVSS 3.x). Package-level severity counts when the record has none. `severitySource` names the entry used, with the computed score for CVSS; both are `null` rather than fabricated when no source yields a label
-- Truncation is never silently treated as clean — `truncated` (single query) and per-package `truncated` plus `truncatedCount` (batch) flag incomplete OSV pagination, and truncated rows are excluded from `cleanCount`
-- Query echo (`queryMeta` / `effectiveQuery`) and aggregate batch `summary` (`worstSeverity`, `vulnerableCount`, `cleanCount`) let agents verify requests and triage without reading every row
-- Advisory text is framed as untrusted data in `content[]` and escaped at the render boundary: tag-shaped text, autolinks, reference definitions, and non-`http(s)` link destinations cannot become live HTML or links in a Markdown client. Recognized variants of the two advisory frame tokens render as annotated text, including in code blocks; this is finite token handling, not semantic prompt-injection prevention. `structuredContent` keeps every OSV string verbatim
+- Truncation is never read as clean — `truncated` flags incomplete OSV pagination, and truncated batch rows are left out of `cleanCount`
+- `aliases` (CVE IDs) on every advisory chain to `nist-nvd-mcp-server` for CVSS base scores and CISA KEV status
+- Responses are capped at 24,000 bytes; a larger one returns an `overflow` preview with `page` arguments for fetching the rest
+- Advisory text in `content[]` is escaped so it can't render as live HTML or links; `structuredContent` keeps every OSV string verbatim
 
 ## Getting started
 
@@ -138,7 +107,7 @@ A public instance is available at `https://osv-advisory.caseyjhand.com/mcp` — 
 
 ### Self-Hosted / Local
 
-Add the following to your MCP client configuration file. No API key is required — OSV.dev is fully public.
+Add the following to your MCP client configuration file.
 
 ```json
 {
@@ -233,18 +202,18 @@ cp .env.example .env
 
 ## Configuration
 
-All configuration is validated at startup. No server-specific env vars are required — OSV.dev is keyless and fully public.
+All configuration is validated at startup, and every variable is optional.
 
 | Variable | Description | Default |
 |:---------|:------------|:--------|
 | `OSV_REQUEST_TIMEOUT_MS` | HTTP request timeout for OSV.dev API calls, in milliseconds. | `10000` |
 | `OSV_BATCH_CONCURRENCY` | Maximum concurrent OSV.dev requests issued by `osv_query_batch`. | `10` |
-| `OSV_QUERY_MAX_PAGES` | Maximum OSV.dev result pages followed per package by the query tools before marking a result truncated. | `10` |
+| `OSV_QUERY_MAX_PAGES` | Maximum OSV.dev result pages followed per package before a result is marked `truncated`. | `10` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | Port for HTTP server. | `3010` |
 | `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path. | `/mcp` |
 | `MCP_PUBLIC_URL` | Public origin override for TLS-terminating reverse-proxy deployments. | none |
-| `MCP_SESSION_MODE` | HTTP session mode: `stateful`, `stateless`, or `auto`. `createApp()` declares `stateless` — no tool has a multi-round input flow — and setting this overrides it. | `stateless` |
+| `MCP_SESSION_MODE` | HTTP session mode: `stateless`, `stateful`, or `auto`. | `stateless` |
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (RFC 5424). | `info` |
 | `LOGS_DIR` | Directory for log files (Node.js only). | `<project-root>/logs` |
