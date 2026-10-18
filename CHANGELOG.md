@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-10-18 · ⚠️ Breaking
+
+Query vulnerabilities by Package URL or full Git commit.
+
 ## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-10-14 · ⚠️ Breaking
 
 Bounded advisory retrieval and native batch scans
