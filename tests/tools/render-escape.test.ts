@@ -343,24 +343,25 @@ describe('finite advisory frame variants', () => {
     ]) {
       for (const escapeText of [escapeAdvisoryInline, escapeAdvisoryBlock]) {
         const small = cpuTime(escapeText, build(5_000), 64);
-        for (const size of [20_000, 80_000, 320_000]) {
+        for (const size of [10_000, 20_000, 40_000, 80_000, 160_000, 320_000]) {
           const elapsed = cpuTime(escapeText, build(size), 4);
           expect(elapsed).toBeLessThan(500_000);
-          if (size === 320_000) expect(elapsed / small).toBeLessThan(256);
+          expect(elapsed / small).toBeLessThan(4 * (size / 5_000));
         }
       }
     }
-  });
+  }, 60000);
 });
 
 describe('escape timing', () => {
-  /** Best-of-five wall time for escaping `input` `reps` times. */
+  /** Best-of-five thread CPU microseconds per escape; excludes host scheduling delays. */
   function time(escapeText: (s: string) => string, input: string, reps: number): number {
     let best = Number.POSITIVE_INFINITY;
     for (let trial = 0; trial < 5; trial++) {
-      const start = performance.now();
+      const start = process.threadCpuUsage();
       for (let i = 0; i < reps; i++) escapeText(input);
-      best = Math.min(best, performance.now() - start);
+      const elapsed = process.threadCpuUsage(start);
+      best = Math.min(best, elapsed.user + elapsed.system);
     }
     return best / reps;
   }
@@ -376,6 +377,7 @@ describe('escape timing', () => {
     'tilde fences of growing length': (n) => '~~~~\n~~~\n'.repeat(n / 9),
     'reference-definition prefixes': (n) => `${'> - '.repeat(n / 4)}[`,
     'reference-definition prefixes with no bracket': (n) => `${'> 1. '.repeat(n / 5)}x`,
+    'long digit run': (n) => `${'9'.repeat(n)}. [`,
     'bracket runs': (n) => '[\\'.repeat(n / 2),
     'link closers': (n) => `[${'](x'.repeat(n / 3)}`,
     'link closer before a space run': (n) => `](${' '.repeat(n - 2)}`,
@@ -383,13 +385,31 @@ describe('escape timing', () => {
     'backslash run before a closer': (n) => `${'\\'.repeat(n - 3)}]:(`,
   };
 
-  it.each(Object.entries(WORST_CASES))('%s grows linearly (5k → 80k chars)', (_name, build) => {
-    for (const escapeText of [escapeAdvisoryInline, escapeAdvisoryBlock]) {
-      const t5k = time(escapeText, build(5_000), 64);
-      const t80k = time(escapeText, build(80_000), 4);
-      // 16× the input: linear ≈ 16×, quadratic ≈ 256×. The bound leaves 4× headroom for noise.
-      expect(t80k / t5k).toBeLessThan(64);
-      expect(t80k).toBeLessThan(50);
-    }
-  });
+  it.each(Object.entries(WORST_CASES))(
+    '%s bounds CPU growth across a 64-fold input span',
+    (name, build) => {
+      // Keep Bun's regex-tier boundary outside the ratio for these shapes; still bound large inputs.
+      const baseSize =
+        name === 'link closers'
+          ? 500
+          : [
+                'reference-definition prefixes',
+                'reference-definition prefixes with no bracket',
+                'bracket runs',
+              ].includes(name)
+            ? 1_000
+            : 5_000;
+      for (const escapeText of [escapeAdvisoryInline, escapeAdvisoryBlock]) {
+        const baseline = time(escapeText, build(baseSize), 64);
+        for (const size of [2, 4, 8, 16, 32, 64].map((factor) => baseSize * factor)) {
+          const elapsed = time(escapeText, build(size), 4);
+          // Fourfold headroom at every doubling; 64× input must stay below 256× CPU.
+          expect(elapsed / baseline).toBeLessThan(4 * (size / baseSize));
+          expect(elapsed).toBeLessThan(50_000);
+        }
+        if (baseSize < 5_000) expect(time(escapeText, build(320_000), 4)).toBeLessThan(50_000);
+      }
+    },
+    60000,
+  );
 });
