@@ -37,7 +37,7 @@
         },
         {
           "name": "OSV_QUERY_MAX_PAGES",
-          "description": "Maximum number of OSV.dev result pages followed per package in package and batch queries before marking a result truncated.",
+          "description": "Maximum number of OSV.dev result pages followed per package or commit before marking a result truncated.",
           "format": "string",
           "isRequired": false,
           "default": "10"
@@ -83,7 +83,7 @@
         },
         {
           "name": "OSV_QUERY_MAX_PAGES",
-          "description": "Maximum number of OSV.dev result pages followed per package in package and batch queries before marking a result truncated.",
+          "description": "Maximum number of OSV.dev result pages followed per package or commit before marking a result truncated.",
           "format": "string",
           "isRequired": false,
           "default": "10"

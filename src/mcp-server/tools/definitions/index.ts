@@ -6,4 +6,5 @@
 export { osvGetVulnerability } from './osv-get-vulnerability.tool.js';
 export { osvListEcosystems } from './osv-list-ecosystems.tool.js';
 export { osvQueryBatch } from './osv-query-batch.tool.js';
+export { osvQueryCommit } from './osv-query-commit.tool.js';
 export { osvQueryPackage } from './osv-query-package.tool.js';

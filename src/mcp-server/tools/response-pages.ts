@@ -17,18 +17,24 @@ export const PageInput = z
       .string()
       .max(1024)
       .regex(/^(?:\/(?:[^~]|~[01])*)?$/)
-      .describe('RFC 6901 pointer into normalized output; empty string selects its root.'),
+      .describe(
+        'Field pointer announced by overflow or entries[].deferred.path; empty string selects the root. Keep the same path while following nextOffset.',
+      ),
     offset: z
       .number()
       .int()
       .nonnegative()
       .default(0)
-      .describe('Entry offset, or Unicode code-point offset for text.'),
+      .describe(
+        'Start at zero; on later calls set this to the previous page.nextOffset until it is null. Text offsets count Unicode code points.',
+      ),
     revision: z
       .string()
       .regex(/^[a-f0-9]{64}$/)
       .optional()
-      .describe('Revision returned for this node; omit on first retrieval.'),
+      .describe(
+        'Use page.revision only when continuing the same path. Omit on the first call to any deferred child path; restart without it after stale_page_revision.',
+      ),
   })
   .strict();
 
@@ -53,7 +59,9 @@ export const RetrievalOutput = z.object({
         .array(z.string())
         .describe('Complete top-level fields retained in this response.'),
       omitted: z.array(Deferred).describe('Omitted values, all addressable through page.path.'),
-      page: PageInput.describe('First retrieval arguments; repeat the original tool input.'),
+      page: PageInput.describe(
+        'Repeat the original tool input with page: overflow.page. Later select path, offset: page.nextOffset and revision: page.revision; do not pass the output page object.',
+      ),
       notice: z.string().describe('Transmission omission and fresh re-fetch semantics.'),
     })
     .optional()

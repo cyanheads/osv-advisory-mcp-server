@@ -16,7 +16,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 /** Default in-flight request cap for `osv_query_batch` when `OSV_BATCH_CONCURRENCY` is unset. */
 const DEFAULT_BATCH_CONCURRENCY = 10;
 
-/** Default per-package page-follow cap when `OSV_QUERY_MAX_PAGES` is unset. */
+/** Default page-follow cap per package or commit when `OSV_QUERY_MAX_PAGES` is unset. */
 const DEFAULT_MAX_QUERY_PAGES = 10;
 
 /**
@@ -45,7 +45,7 @@ const ServerConfigSchema = z.object({
     .positive()
     .default(DEFAULT_MAX_QUERY_PAGES)
     .describe(
-      'Maximum number of OSV.dev result pages followed per package in package and batch queries before marking a result truncated. Must be a positive integer.',
+      'Maximum number of OSV.dev result pages followed per package or commit before marking a result truncated. Must be a positive integer.',
     ),
 });
 

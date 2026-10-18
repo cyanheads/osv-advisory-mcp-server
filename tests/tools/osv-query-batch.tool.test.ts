@@ -860,10 +860,12 @@ describe('osvQueryBatch over a real service and stubbed OSV HTTP', () => {
     it('advertises each row field with one pattern and no minLength or allOf', () => {
       const schema = z.toJSONSchema(osvQueryBatch.input) as unknown as {
         properties: {
-          packages: { items: { properties: Record<string, Record<string, unknown>> } };
+          packages: {
+            items: { anyOf: Array<{ properties: Record<string, Record<string, unknown>> }> };
+          };
         };
       };
-      const { properties } = schema.properties.packages.items;
+      const { properties } = schema.properties.packages.items.anyOf[0]!;
       for (const field of FIELDS) {
         expect(properties[field]).toMatchObject({ type: 'string', pattern: '\\S' });
         expect(properties[field]).not.toHaveProperty('minLength');

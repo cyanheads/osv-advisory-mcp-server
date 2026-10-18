@@ -9,6 +9,12 @@ import { type Context, z } from '@cyanheads/mcp-ts-core';
 import { McpError, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { matchesQueriedPackage, type PackageQuery } from './affected-match.js';
+import {
+  type PackageIdentifier,
+  packageBody,
+  type ResolvedPackage,
+  resolvePackage,
+} from './package-identifier.js';
 import { deriveSeverity } from './severity.js';
 import type {
   BatchVulnBrief,
@@ -358,6 +364,37 @@ export class OsvApiService {
     this.maxQueryPages = options.maxQueryPages ?? DEFAULT_MAX_QUERY_PAGES;
   }
 
+  /** Query a full Git commit, retaining record-wide severity and source ranges. */
+  async queryCommit(
+    commit: string,
+    ctx: Context,
+  ): Promise<
+    { vulns: OsvVulnerability[]; truncated: boolean } | { invalid: true; message: string }
+  > {
+    const boundedCtx = {
+      ...ctx,
+      signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(BATCH_TIMEOUT_MS)]),
+    };
+    const vulns: OsvVulnerability[] = [];
+    let pageToken: string | undefined;
+    for (let page = 0; page < this.maxQueryPages; page++) {
+      boundedCtx.signal.throwIfAborted();
+      const { status, data } = await postJson<RawOsvQueryResponse>(
+        '/v1/query',
+        { commit, ...(pageToken ? { page_token: pageToken } : {}) },
+        this.timeoutMs,
+        boundedCtx,
+      );
+      if (status === 400) return { invalid: true, message: (data as OsvApiError).message };
+      if (status !== 200) throw serviceUnavailable(`OSV API returned HTTP ${status}.`, { status });
+      const raw = data as RawOsvQueryResponse;
+      for (const record of raw.vulns ?? []) vulns.push(normalizeVuln(record));
+      pageToken = raw.next_page_token || undefined;
+      if (!pageToken) break;
+    }
+    return { vulns, truncated: pageToken !== undefined };
+  }
+
   /**
    * Query vulnerabilities for a single package+version.
    * Returns the full vulnerability list or an empty array when none found; each vuln's
@@ -369,6 +406,7 @@ export class OsvApiService {
     ecosystem: string,
     version: string,
     ctx: Context,
+    identifier?: ResolvedPackage,
   ): Promise<
     | { vulns: OsvPackageVulnerability[]; invalid: false; truncated: boolean }
     | { invalid: true; message: string }
@@ -382,11 +420,9 @@ export class OsvApiService {
     // return a bare token with no vulns on a page, so an empty first page is
     // never assumed clean — a pending token at the cap surfaces as truncated.
     for (let page = 0; page < this.maxQueryPages; page++) {
-      const body: {
-        version: string;
-        package: { name: string; ecosystem: string };
-        page_token?: string;
-      } = { version, package: { name, ecosystem } };
+      const body: ReturnType<typeof packageBody> & { page_token?: string } = packageBody(
+        identifier ?? { name, ecosystem, version },
+      );
       if (pageToken) body.page_token = pageToken;
 
       const { status, data } = await postJson<RawOsvQueryResponse>(
@@ -466,13 +502,14 @@ export class OsvApiService {
    * share a bounded request pool and operation deadline; caller cancellation propagates.
    */
   async queryBatch(
-    packages: Array<{ name: string; ecosystem: string; version: string }>,
+    packages: PackageIdentifier[],
     ctx: Context,
   ): Promise<
     Array<{
       name: string;
       ecosystem: string;
       version: string;
+      purl?: string;
       vulns: BatchVulnBrief[];
       error: string | null;
       truncated: boolean;
@@ -485,20 +522,34 @@ export class OsvApiService {
     );
     const signal = AbortSignal.any([ctx.signal, deadline.signal]);
     const batchCtx = { ...ctx, signal };
-    const rows = packages.map((pkg) => ({
-      pkg,
-      ids: new Set<string>(),
-      pageToken: undefined as string | undefined,
-      pages: 0,
-      error: null as string | null,
-    }));
+    const rows = packages.map((input) => {
+      let pkg: ResolvedPackage;
+      let error: string | null = null;
+      try {
+        pkg = resolvePackage(input);
+      } catch (cause) {
+        pkg = {
+          name: '',
+          ecosystem: '',
+          version: input.version ?? '',
+          ...(input.purl === undefined ? {} : { purl: input.purl }),
+        };
+        error = cause instanceof Error ? cause.message : String(cause);
+      }
+      return {
+        pkg,
+        ids: new Set<string>(),
+        pageToken: undefined as string | undefined,
+        pages: 0,
+        error,
+      };
+    });
     const rawRecords = new Map<string, RawOsvVulnerability>();
     const detailErrors = new Map<string, string>();
     const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
     const checkCancelled = () => ctx.signal.throwIfAborted();
     const bodyFor = (row: (typeof rows)[number]) => ({
-      package: { name: row.pkg.name, ecosystem: row.pkg.ecosystem },
-      version: row.pkg.version,
+      ...packageBody(row.pkg),
       ...(row.pageToken ? { page_token: row.pageToken } : {}),
     });
     const pool = async <T>(items: T[], run: (item: T) => Promise<void>) => {
@@ -558,7 +609,7 @@ export class OsvApiService {
       });
     };
     try {
-      let pending = rows;
+      let pending = rows.filter((row) => !row.error);
       let recoveredIndex = false;
       while (pending.length) {
         checkCancelled();

@@ -1,6 +1,6 @@
 # osv-advisory-mcp-server - Directory Structure
 
-Generated on: 2026-10-14 14:36:37
+Generated on: 2026-10-18 19:17:05
 
 ```text
 osv-advisory-mcp-server/
@@ -150,13 +150,16 @@ osv-advisory-mcp-server/
 │   │       │   ├── osv-get-vulnerability.tool.ts
 │   │       │   ├── osv-list-ecosystems.tool.ts
 │   │       │   ├── osv-query-batch.tool.ts
+│   │       │   ├── osv-query-commit.tool.ts
 │   │       │   └── osv-query-package.tool.ts
+│   │       ├── package-input.ts
 │   │       ├── render-escape.ts
 │   │       └── response-pages.ts
 │   ├── services/
 │   │   └── osv-api/
 │   │       ├── affected-match.ts
 │   │       ├── osv-api-service.ts
+│   │       ├── package-identifier.ts
 │   │       ├── severity.ts
 │   │       └── types.ts
 │   └── index.ts
@@ -191,6 +194,7 @@ osv-advisory-mcp-server/
 │   │   └── check-ecosystems.test.ts
 │   ├── services/
 │   │   ├── affected-match.test.ts
+│   │   ├── identifier-timing.test.ts
 │   │   ├── osv-api-service.test.ts
 │   │   └── osv-native-batch.test.ts
 │   └── tools/
@@ -202,7 +206,10 @@ osv-advisory-mcp-server/
 │       ├── osv-list-ecosystems.tool.test.ts
 │       ├── osv-native-batch.tool.test.ts
 │       ├── osv-query-batch.tool.test.ts
+│       ├── osv-query-commit.tool.test.ts
 │       ├── osv-query-package.tool.test.ts
+│       ├── purl-query.test.ts
+│       ├── query-guidance.test.ts
 │       └── render-escape.test.ts
 ├── .dockerignore
 ├── .env.example

@@ -5,7 +5,7 @@
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.15`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/server` ^2.3.1
-**Zod:** ^4.6.5
+**Zod:** ^4.6.7
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
 
@@ -98,7 +98,7 @@ const ServerConfigSchema = z.object({
     .int()
     .positive()
     .default(10)
-    .describe('Max OSV pages followed per package in package and batch queries before marking results truncated.'),
+    .describe('Max OSV pages followed per package or commit before marking results truncated.'),
 });
 
 let _config: z.infer<typeof ServerConfigSchema> | undefined;
@@ -207,15 +207,18 @@ src/
     osv-api/
       osv-api-service.ts                # OSV.dev REST API service (fetch, retry, normalization)
       affected-match.ts                 # Which affected[] entries match a queried package (fixedVersions, severity scope)
+      package-identifier.ts             # PURL parsing and OSV package coordinates
       severity.ts                       # severityLabel / severitySource derivation, CVSS scoring
       types.ts                          # Domain types (OsvVuln, OsvAffected, etc.)
   mcp-server/
     tools/
       render-escape.ts                  # Render-boundary escape for OSV text in content[]
       response-pages.ts                 # Bounded replies and stateless JSON-pointer pages
+      package-input.ts                  # Tuple and PURL input schemas
       definitions/
         osv-query-package.tool.ts       # osv_query_package — single package vulnerability lookup
         osv-query-batch.tool.ts         # osv_query_batch — batch dependency audit
+        osv-query-commit.tool.ts        # osv_query_commit — full Git commit vulnerability lookup
         osv-get-vulnerability.tool.ts   # osv_get_vulnerability — full advisory record fetch
         osv-list-ecosystems.tool.ts     # osv_list_ecosystems — static ecosystem list
         index.ts                        # Tool barrel export

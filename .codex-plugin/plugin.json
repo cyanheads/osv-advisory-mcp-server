@@ -15,7 +15,7 @@
   "interface": {
     "displayName": "osv-advisory-mcp-server",
     "shortDescription": "Query OSV.dev for package vulnerabilities, batch-audit dependency lists, and fetch full advisory records via MCP. STDIO or Streamable HTTP.",
-    "longDescription": "Read-only access to the OSV.dev vulnerability database over MCP. Check a single package version with osv_query_package, audit a whole lockfile or SBOM in one call with osv_query_batch (up to 1000 {name, ecosystem, version} tuples), and pull the full advisory — CVSS vectors, CVE aliases, affected ranges, and fix versions — with osv_get_vulnerability. osv_list_ecosystems returns the valid ecosystem identifiers to pass to the query tools. Keyless and public; CVE aliases chain to nist-nvd-mcp-server for CVSS scoring and CISA KEV status. Runs over STDIO or Streamable HTTP.",
+    "longDescription": "Read-only access to the OSV.dev vulnerability database over MCP. Check a package version by tuple or PURL with osv_query_package, audit up to 1000 mixed package identifiers with osv_query_batch, and query a full Git commit hash with osv_query_commit. Fetch full advisory records with osv_get_vulnerability and valid ecosystem identifiers with osv_list_ecosystems. Keyless and public; CVE aliases chain to nist-nvd-mcp-server for CVSS scoring and CISA KEV status. Runs over STDIO or Streamable HTTP.",
     "developerName": "cyanheads",
     "category": "security",
     "capabilities": ["Read"],

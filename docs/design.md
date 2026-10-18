@@ -6,8 +6,9 @@
 
 | Name | Description | Key Inputs | Annotations | Errors |
 |:-----|:------------|:-----------|:------------|:-------|
-| `osv_query_package` | Query vulnerabilities for a single package version. Returns all known vulns: OSV IDs, CVE aliases, severity (CVSS string), affected ranges, fix versions, CWE IDs. The primary "is this package version vulnerable?" tool. | `name` (package name), `ecosystem` (exact string — use `osv_list_ecosystems` to validate), `version`; optional `page: {path, offset?, revision?, advisoryId?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | `invalid_ecosystem`, `invalid_page_path`, `stale_page_revision` (ValidationError); `advisory_not_found` (NotFound) |
-| `osv_query_batch` | Batch vulnerability query over an array of `{name, ecosystem, version}` tuples — one call covers a full dependency list. Per-package results with `vulnCount` and `vulns` (IDs, `aliases`, `severityLabel`, `fixedVersions`) for each. The differentiator for SBOM/lockfile audits. | `packages` (array of `{name, ecosystem, version}`, max 1000); optional `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | `invalid_page_path`, `stale_page_revision` (ValidationError); upstream failures set each affected row's `error`, cancellation fails the call |
+| `osv_query_package` | Query a package version, retaining package-scoped severity and fixes. | `{name, ecosystem, version}` or `{purl, version?}`; optional `page: {path, offset?, revision?, advisoryId?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | Invalid identifiers and page requests fail validation; `advisory_not_found` is NotFound |
+| `osv_query_batch` | Audit mixed tuple/PURL identifiers with positional results and package-scoped severity and fixes. | `packages` (1–1000 identifiers); optional `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | Invalid page requests fail validation; identifier and upstream failures set affected rows' `error`, cancellation fails the call |
+| `osv_query_commit` | Query a full Git commit with record-wide severity and GIT range details. | `commit` (40/64 hexadecimal characters); optional `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | `invalid_commit_query`, `invalid_page_path`, `stale_page_revision` (ValidationError) |
 | `osv_get_vulnerability` | Fetch the full record for one exact OSV advisory ID (`GHSA-…`, `PYSEC-…`, `RUSTSEC-…`, `GO-…`, `DSA-…-1`, `USN-…-1`, `RHSA-…`, `CVE-…`). Returns: summary, details, aliases (CVE IDs), severity, affected packages/ranges, fix versions, CWE IDs, references. | `id` (one complete OSV advisory ID); optional `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | `vulnerability_not_found` (NotFound); `invalid_page_path`, `stale_page_revision` (ValidationError) |
 | `osv_list_ecosystems` | Return the list of supported ecosystem strings. Use before querying to validate the `ecosystem` parameter — ecosystem strings are case-sensitive exact matches. | none | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | — |
 
@@ -25,7 +26,7 @@ None. Data-oriented server with no recurring message templates warranted.
 
 osv-advisory-mcp-server wraps the Google OSV.dev REST API v1. It maps package-version tuples to known vulnerabilities across 20+ ecosystems — npm, PyPI, crates.io, Go, Maven, NuGet, Packagist, RubyGems, Debian, Alpine, and more. Where NVD maps vulnerabilities to CPEs (product-level), OSV maps them directly to package-version ranges, eliminating the CPE matching problem for dependency audit workflows.
 
-Primary audience: developers, DevSecOps engineers, and SREs maintaining dependencies. The server is the "fast, direct answer" layer for lockfile scanning; it composes with `nist-nvd-mcp-server` by surfacing `aliases` (CVE IDs) that chain into NVD for CVSS scoring, EPSS, and CISA KEV status.
+Primary audience: developers, DevSecOps engineers, and SREs maintaining dependencies. The server is the "fast, direct answer" layer for lockfile scanning; it composes with `nist-nvd-mcp-server` by surfacing `aliases` (CVE IDs) that chain into NVD for CVSS scoring and CISA KEV status.
 
 ---
 
@@ -34,7 +35,7 @@ Primary audience: developers, DevSecOps engineers, and SREs maintaining dependen
 - Read-only. No authentication. No API key required.
 - No published rate limit — API key not supported. Be respectful; `osv_query_batch` exists precisely to reduce call volume.
 - All endpoints respond with JSON. Error shape: `{ code: number, message: string }` (Google APIs error model).
-- `POST /v1/query` — single package+version lookup. Returns `{ vulns: [...] }` or `{}` (empty object, not `{ vulns: [] }`) when nothing found.
+- `POST /v1/query` — package+version, PURL, or commit lookup. Returns `{ vulns: [...] }` or `{}` (empty object, not `{ vulns: [] }`) when nothing found.
 - `POST /v1/querybatch` — batch lookup. Returns `{ results: [...] }` where each entry corresponds positionally to the input query. Empty entries are `{}` (no `vulns` key), not `{ vulns: [] }`.
 - `GET /v1/vulns/{id}` — full vuln record. Returns 404 with `{ code: 5, message: "Vulnerability not found" }` for unknown IDs. IDs match exactly, including case; Debian, Ubuntu, and SUSE IDs carry a revision suffix (`DSA-5678` is 404, `DSA-5678-1` resolves). There is no list or prefix lookup (`GET /v1/vulns/*` is 404).
 - `/v1/vulns POST` (list-by-ecosystem) — **NOT a real endpoint.** Returns `{ code: 404, message: "The current request is not defined by this API." }`. Confirmed by live probe. `osv_list_ecosystems` returns a static list.
@@ -51,7 +52,7 @@ Primary audience: developers, DevSecOps engineers, and SREs maintaining dependen
 
 | Service | Wraps | Used By |
 |:--------|:------|:--------|
-| `OsvApiService` | OSV.dev REST API v1 (`/v1/query`, `/v1/querybatch`, `/v1/vulns/{id}`) | `osv_query_package`, `osv_query_batch`, `osv_get_vulnerability` |
+| `OsvApiService` | OSV.dev REST API v1 (`/v1/query`, `/v1/querybatch`, `/v1/vulns/{id}`) | `osv_query_package`, `osv_query_batch`, `osv_query_commit`, `osv_get_vulnerability` |
 
 Single service, single API. No shared auth state; every call is anonymous HTTP. The service handles fetch + parse + retry. No rate-limit queuing required (no published limit), but exponential backoff on 5xx.
 
@@ -67,7 +68,7 @@ Framework env vars (`MCP_TRANSPORT_TYPE`, `MCP_HTTP_PORT`, `STORAGE_PROVIDER_TYP
 |:--------|:---------|:------------|
 | `OSV_REQUEST_TIMEOUT_MS` | No | HTTP request timeout in milliseconds. Default: 10000. |
 | `OSV_BATCH_CONCURRENCY` | No | Maximum concurrent OSV.dev requests issued by `osv_query_batch`. Default: 10. |
-| `OSV_QUERY_MAX_PAGES` | No | Maximum OSV.dev result pages followed per package by the query tools before marking a result truncated. Default: 10. |
+| `OSV_QUERY_MAX_PAGES` | No | Maximum OSV.dev result pages followed per package or commit before marking a result truncated. Default: 10. |
 
 ---
 
@@ -78,6 +79,7 @@ Framework env vars (`MCP_TRANSPORT_TYPE`, `MCP_HTTP_PORT`, `STORAGE_PROVIDER_TYP
 3. `osv_query_package` — single package+version query, normalized output
 4. `osv_get_vulnerability` — full record fetch by OSV ID
 5. `osv_query_batch` — batch query with partial-success output
+6. `osv_query_commit` — full Git commit lookup with record-wide normalization
 
 Each step is independently testable. Steps 3 and 4 can be developed in parallel after the service is up.
 
@@ -95,11 +97,17 @@ Each step is independently testable. Steps 3 and 4 can be developed in parallel 
 
 ## Design Decisions
 
+### Package identity and commit scope
+
+Package queries accept either the existing name/ecosystem/version tuple or a PURL with exactly one embedded or separate version. `packageurl-js` parses the standard syntax; the OSV adapter derives the package coordinate used by the existing affected-package matcher. The original PURL is sent upstream, preserving qualifiers and subpaths. This keeps package-scoped severity and fixes consistent between equivalent tuple and PURL calls. Batch rows may mix both forms, and malformed or unsupported PURLs fail their own rows.
+
+Commit queries use a dedicated tool because a commit has no package identity. They accept complete SHA-1 or SHA-256 hashes, normalize severity across the record, preserve GIT repositories and ordered range events, and omit package-specific `fixedVersions`. They share the bounded retrieval model and upstream page cap.
+
 ### Bounded stateless retrieval
 
 `mcp-server/tools/response-pages.ts` measures the complete dual-surface success reply against a fixed 24,000-byte UTF-8 ceiling, including declared enrichment and its framework trailer. It preserves fitting legacy replies; transmission overflow replaces the full payload with a measured preview and an addressable outline. The flat output schemas make full fields optional and independently render each present `preview`, `overflow`, or `page` arm. The full-branch schemas and examples below describe the unchanged normalized data, not a promise that every call inlines it.
 
-All three advisory tools accept `page: {path, offset?, revision?}`. `osv_query_package` additionally accepts `page.advisoryId`, using one GET and the same package-scoped normalization as its query path. Re-calls reuse the original input and add the announced page arguments; recipes never duplicate an arbitrary dependency list in the response. Own-property RFC 6901 pointers select normalized nodes. Arrays and objects page entries; strings page Unicode code points. A child too large to inline becomes a deferred pointer, consuming its parent entry so recursive traversal terminates. Binary search measures candidate slices against both response surfaces, including rendered escape expansion.
+All four advisory tools accept `page: {path, offset?, revision?}`. `osv_query_package` additionally accepts `page.advisoryId`, using one GET and the same package-scoped normalization as its query path. Repeat the original input with `page: overflow.page` for the first page. Continue that path with `offset: page.nextOffset` and `revision: page.revision` until `nextOffset` is null; never send the complete output page object. Fetch each deferred child at its own `entries[].deferred.path`, starting at offset zero without a revision. Own-property RFC 6901 pointers select normalized nodes. Arrays and objects page entries; strings page Unicode code points. A child too large to inline becomes a deferred pointer, consuming its parent entry so recursive traversal terminates. Binary search measures candidate slices against both response surfaces, including rendered escape expansion.
 
 Package previews retain every advisory ID, alias, scoped severity label and fix when their compact view fits, and explicitly identify a complete advisory list. If it does not fit, `/vulns` remains retrievable and the list is disclosed as incomplete. Every affected package, package-less GIT range, ordered event and repeated version remains addressable; normalization is unchanged.
 
@@ -111,7 +119,7 @@ Node revisions hash normalized JSON. Supplied stale revisions fail with `stale_p
 
 ### Native preflight with package-scoped enrichment
 
-`osv_query_batch` sends package tuples to `POST /v1/querybatch`, retaining their original positions while following each row's independent `next_page_token` up to `OSV_QUERY_MAX_PAGES`. A token-only page is incomplete. Successful envelopes must contain exactly one valid result per submitted query; malformed or misaligned results become row errors.
+`osv_query_batch` sends package tuples and PURLs to `POST /v1/querybatch`, retaining their original positions while following each row's independent `next_page_token` up to `OSV_QUERY_MAX_PAGES`. A token-only page is incomplete. Successful envelopes must contain exactly one valid result per submitted query; malformed or misaligned results become row errors.
 
 Preflight returns only advisory IDs and modification timestamps. Each unique ID is retrieved once per call through `GET /v1/vulns/{id}`. The service shares raw records, then computes each row's brief using its own package matcher, preserving aliases, summary, fixes and scoped severity. This avoids full queries for clean rows and repeated retrieval of shared advisories. A single vulnerable row can require more requests and take longer than a full package query; latency depends on the workload. There is no cross-call cache.
 
@@ -139,7 +147,7 @@ OSV severity is an array of `{ type, score }` entries — CVSS vectors and Ubunt
 3. The highest score among parseable `CVSS_V3`/`CVSS_V4` vectors, banded 0.1–3.9 `LOW`, 4.0–6.9 `MODERATE`, 7.0–8.9 `HIGH`, 9.0–10.0 `CRITICAL`. A 0.0 score has no band.
 4. Otherwise `null` — never fabricated.
 
-Entries come from the record-level `severity[]`, or when it is empty, from `affected[].severity`: the entries matching the queried package (the `fixedVersions` matcher) in `osv_query_package` and `osv_query_batch`, every entry in `osv_get_vulnerability`. `severitySource` (`{ type, score, computedScore? }`, `null` without a label) on package vulns and full records names the entry used; `osv_get_vulnerability` also returns each affected package's own `severity`. Batch rows carry the label only, and `summary.worstSeverity` ranks those labels.
+Entries come from the record-level `severity[]`, or when it is empty, from `affected[].severity`: the entries matching the queried package (the `fixedVersions` matcher) in `osv_query_package` and `osv_query_batch`, every entry in `osv_query_commit` and `osv_get_vulnerability`. `severitySource` (`{ type, score, computedScore? }`, `null` without a label) on package/commit vulns and full records names the entry used; `osv_get_vulnerability` also returns each affected package's own `severity`. Batch rows carry the label only, and `summary.worstSeverity` ranks those labels.
 
 - **Scored as published, not base-only** — `computedScore` includes the temporal (CVSS 3.x) or threat and environmental (CVSS 4.0) metrics a vector carries, matching the score its publisher states: `CVE-2026-34743`'s `…/E:U` vector scores 1.7 (`LOW`), the CNA's figure; stripping `E:U` would give 6.3. CVSS 3.x environmental metrics are not applied.
 - **A provider label outranks a higher CVSS score** — `UBUNTU-CVE-2025-31115` is `MODERATE` (Ubuntu `medium`) although its CVSS 4.0 vector scores 8.7; `severitySource` makes the basis visible.
@@ -168,7 +176,7 @@ OSV strings are upstream-controlled Markdown. `format()` passes every OSV-source
 
 ### aliases field is the NVD bridge
 
-Every vuln output prominently surfaces `aliases` as a first-class field alongside the OSV ID. This is the primary composition point: an agent calls `osv_query_package` or `osv_query_batch`, gets `aliases: ["CVE-2020-28500"]`, and chains to `nvd_get_cve` on `nist-nvd-mcp-server` for CVSS scoring, EPSS, and CISA KEV status. The `format()` function renders aliases in bold at the top of each vuln entry so `content[]`-only clients see them without having to scan the full record.
+Every vuln output prominently surfaces `aliases` as a first-class field alongside the OSV ID. This is the primary composition point: an agent calls `osv_query_package` or `osv_query_batch`, gets `aliases: ["CVE-2020-28500"]`, and chains to `nvd_get_cve` on `nist-nvd-mcp-server` for CVSS scoring and CISA KEV status. The `format()` function renders aliases in bold at the top of each vuln entry so `content[]`-only clients see them without having to scan the full record.
 
 ---
 
@@ -259,16 +267,9 @@ Events:
 
 **Description:** Query known vulnerabilities for a single package version across any supported ecosystem. Returns all matching OSV advisories with severity (CVSS vectors), CVE aliases, affected version ranges, and the fixed versions listed for the queried package. Use `osv_list_ecosystems` to validate the ecosystem string before querying — ecosystem strings are case-sensitive exact matches and an invalid value returns an error, not empty results.
 
-**Input:**
-```ts
-z.object({
-  name: z.string().describe('Package name as it appears in the ecosystem (e.g. "express", "requests", "serde"). Case-sensitive.'),
-  ecosystem: z.string().describe('Ecosystem identifier. Must be an exact match (case-sensitive). Use osv_list_ecosystems to see valid values. Examples: "npm", "PyPI", "crates.io", "Go", "Maven", "NuGet".'),
-  version: z.string().describe('Package version to check (e.g. "4.17.1", "3.1.4", "1.0.0"). Must be an exact version string, not a range.'),
-})
-```
+**Input:** `{name, ecosystem, version}` or `{purl, version?}`, plus optional retrieval `page`. The root schema advertises optional fields and validates their exclusivity. A PURL cannot be combined with `name` or `ecosystem`, and requires exactly one embedded or separate version.
 
-Each field is `z.string().trim().regex(/\S/, '… must not be blank …')`, and the `osv_query_batch` row fields use the same chain.
+Tuple fields and separate versions use `z.string().trim().regex(/\S/, '… must not be blank …')`; batch rows use the same chain. PURLs are trimmed and parsed by `packageurl-js`.
 
 - **Trim before the request** — OSV.dev does not trim, so `" lodash "` matched nothing and read as clean. No package name, ecosystem, or version carries surrounding whitespace, so trimming changes no valid query; interior whitespace (`Rocky Linux`) is kept. The handler, the request, `queryMeta`, the batch rows, and the enrichment echo all see the trimmed value.
 - **One constraint shape, one message** — `.trim()` is a Zod overwrite, not a transform: `tools/list` still advertises a single `pattern: "\\S"` per field (no `minLength`, no `allOf`), and it runs before the blank check, so `""` and whitespace-only values fail `-32602` `invalid_arguments` with one message. A `.min(1)` + `.regex(/\S/)` pair would fire both checks on `""` and repeat the message.
@@ -279,7 +280,7 @@ z.object({
   vulns: z.array(z.object({
     id: z.string().describe('OSV vulnerability ID (e.g. "GHSA-29mw-wpgm-hmr9", "PYSEC-2024-1"). Use with osv_get_vulnerability for full details.'),
     summary: z.string().describe('One-line vulnerability description.'),
-    aliases: z.array(z.string()).describe('Alternative IDs — typically CVE IDs (e.g. ["CVE-2020-28500"]). Use these to query nist-nvd-mcp-server for CVSS scores, EPSS, and CISA KEV status.'),
+    aliases: z.array(z.string()).describe('Alternative IDs — typically CVE IDs (e.g. ["CVE-2020-28500"]). Use these to query nist-nvd-mcp-server for CVSS scores and CISA KEV status.'),
     severity: z.array(z.object({
       type: z.string().describe('Severity type: "CVSS_V3", "CVSS_V4", "CVSS_V2", or "Ubuntu".'),
       score: z.string().describe('CVSS vector string (e.g. "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"), or the Ubuntu priority for type "Ubuntu".'),
@@ -330,18 +331,9 @@ errors: [
 
 ### `osv_query_batch`
 
-**Description:** Query vulnerabilities for multiple packages in one call — the primary tool for dependency audits, SBOM scanning, and lockfile triage. Pass an array of `{name, ecosystem, version}` tuples (up to 1000). Each entry in the response corresponds positionally to the input. Always surfaces `aliases` (CVE IDs) per finding so results can be chained to `nist-nvd-mcp-server` for CVSS scoring.
+**Description:** Query vulnerabilities for multiple packages in one call — the primary tool for dependency audits, SBOM scanning, and lockfile triage. Pass up to 1000 mixed `{name, ecosystem, version}` or `{purl, version?}` entries. Each entry in the response corresponds positionally to the input. Always surfaces `aliases` (CVE IDs) per finding so results can be chained to `nist-nvd-mcp-server` for CVSS scoring.
 
-**Input:**
-```ts
-z.object({
-  packages: z.array(z.object({
-    name: z.string().describe('Package name as it appears in the ecosystem.'),
-    ecosystem: z.string().describe('Ecosystem identifier. Case-sensitive exact match. Use osv_list_ecosystems to validate.'),
-    version: z.string().describe('Exact version string to check.'),
-  })).min(1).max(1000).describe('Packages to audit. One entry per dependency. Positional: result[i] corresponds to packages[i].'),
-})
-```
+**Input:** `packages` is an array of 1–1000 identifiers using exclusive tuple and PURL input shapes. Tuple rows strip unrelated properties; mixed tuple/PURL identifiers are rejected. Optional `page` selects bounded retrieval. `results[i]` corresponds to `packages[i]`.
 
 **Output:**
 ```ts
@@ -356,7 +348,7 @@ z.object({
     vulns: z.array(z.object({
       id: z.string().describe('OSV vulnerability ID.'),
       summary: z.string().describe('One-line advisory description.'),
-      aliases: z.array(z.string()).describe('CVE IDs and other aliases. Chain to nist-nvd-mcp-server via these IDs for CVSS/KEV/EPSS context.'),
+      aliases: z.array(z.string()).describe('CVE IDs and other aliases. Chain to nist-nvd-mcp-server via these IDs for CVSS scores and CISA KEV status.'),
       severityLabel: z.string().nullable().describe('Severity label: "LOW", "MODERATE", "HIGH", "CRITICAL", or null. Same derivation as osv_query_package, scoped to this row\'s package.'),
       fixedVersions: z.array(z.string()).describe("Every fixed version the advisory lists for this row's package, in record order — one per affected interval, typically one per release line. Excludes other packages' fixes and GIT commits. Empty when the advisory lists no fix for this package."),
     })).describe('Vulnerabilities found. Empty array when clean.'),
@@ -372,7 +364,7 @@ z.object({
 })
 ```
 
-**Errors:** `invalid_page_path` and `stale_page_revision` describe bounded retrieval failures. A `packages` array outside 1–1000 entries, or a blank field in any row, fails the input schema (`-32602` `invalid_arguments`) before any OSV call.
+**Errors:** `invalid_page_path` and `stale_page_revision` describe bounded retrieval failures. A `packages` array outside 1–1000 entries, a blank tuple field, or a blank separate version fails the input schema (`-32602` `invalid_arguments`) before any OSV call. Blank or malformed PURLs become per-row errors.
 
 Ecosystems are not checked against a local allowlist: OSV.dev is the authority. Indexed validation recovery preserves original row positions, while repeated or non-indexed rejection uses per-package workers. `results[i].error` identifies failed rows and `summary.errorCount` counts them. A shared advisory detail failure affects every dependent row. Malformed native envelopes and exhausted transient failures affect the submitted group; unrelated completed rows remain successful. Cancellation is a tool error, never a completed scan.
 
@@ -380,9 +372,19 @@ Ecosystems are not checked against a local allowlist: OSV.dev is the authority. 
 
 ---
 
+### `osv_query_commit`
+
+**Input:** A full `commit` hash: 40 hexadecimal characters for SHA-1 or 64 for SHA-256, with either letter case accepted. Abbreviated hashes fail schema validation. Optional `page` uses the same bounded retrieval contract as package queries.
+
+**Output:** `vulns`, upstream `truncated`, and `queryMeta: {commit, vulnCount}`. Advisory summaries use the package advisory fields except `fixedVersions`, which has no package scope here. Severity is record-wide, and `affectedRanges` preserves repository URLs, ordered events, and package-less GIT entries. Oversized results return the shared preview/overflow/page arms.
+
+**Errors:** `invalid_commit_query` for an upstream validation rejection, `invalid_page_path` for an invalid retrieval pointer, and `stale_page_revision` when the selected node changed. Other upstream and cancellation failures retain the service's standard error handling.
+
+---
+
 ### `osv_get_vulnerability`
 
-**Description:** Fetch the full advisory record for an OSV vulnerability ID. Returns the complete record: summary, full details text, CVE aliases, all affected packages and version ranges, fix versions, CVSS severity vectors, CWE weakness IDs, and references. Use when `osv_query_package` or `osv_query_batch` returns a vuln ID and you need the full advisory context — eligibility criteria, scope of affected packages, or remediation guidance.
+**Description:** Fetch the full advisory record for an OSV vulnerability ID. Returns the complete record: summary, full details text, CVE aliases, all affected packages and version ranges, fix versions, CVSS severity vectors, CWE weakness IDs, and references. Use when a query returns a vuln ID and you need the scope of affected packages or remediation guidance.
 
 **Input:**
 ```ts
@@ -408,7 +410,7 @@ z.object({
   id: z.string().describe('OSV vulnerability ID.'),
   summary: z.string().describe('One-line advisory description.'),
   details: z.string().describe('Full advisory text, typically in Markdown. May include proof-of-concept, reproduction steps, or remediation guidance.'),
-  aliases: z.array(z.string()).describe('Alternative IDs — usually CVE IDs. Pass to nvd_get_cve on nist-nvd-mcp-server for CVSS base score, EPSS exploitation probability, and CISA KEV status.'),
+  aliases: z.array(z.string()).describe('Alternative IDs — usually CVE IDs. Pass to nvd_get_cve on nist-nvd-mcp-server for CVSS base scores and CISA KEV status.'),
   published: z.string().describe('ISO 8601 timestamp when published.'),
   modified: z.string().describe('ISO 8601 timestamp of last modification.'),
   severity: z.array(z.object({
@@ -481,5 +483,5 @@ z.object({
 - **Severity absent for some records.** Some records (e.g. `PYSEC-2022-190`, many `USN-` notices) carry neither `database_specific.severity` nor any severity entry; `severityLabel` and `severitySource` are null for them. A record whose only entries are `CVSS_V2`, malformed vectors, or unrecognized Ubuntu priorities is null too.
 - **No CVSS score field.** OSV carries CVSS as vector strings only (`"CVSS:3.1/AV:N/AC:L/..."`); the service scores them with `@turingpointde/cvss.js` and reports the result as `severitySource.computedScore`.
 - **Debian urgency and other `ecosystem_specific` severities are not read.** Only `database_specific.severity`, `Ubuntu` entries, and CVSS v3/v4 vectors produce a label.
-- **Pagination on `/v1/query`.** OSV paginates above 1,000 results or when query processing runs long, sometimes returning a bare `next_page_token` with no vulns. `osv_query_package` (and each batch row) follows tokens up to `OSV_QUERY_MAX_PAGES` and reports `truncated: true` when a token remains — never a clean result.
+- **Pagination on `/v1/query`.** OSV paginates above 1,000 results or when query processing runs long, sometimes returning a bare `next_page_token` with no vulns. Package and commit queries (and each batch row) follow tokens up to `OSV_QUERY_MAX_PAGES` and report `truncated: true` when a token remains — never a clean result.
 - **`fixedVersions` lists every interval's fix.** A multi-interval advisory (Django `PYSEC-2022-190`: `4.0.4, 3.2.13, 2.2.28`) lists one fix per release line; picking the one that covers the queried version needs per-ecosystem version ordering. `affectedRanges[].events` carries the intervals.

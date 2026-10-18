@@ -12,6 +12,7 @@ import {
 } from '@cyanheads/mcp-ts-core/errors';
 import { escapeAdvisoryInline } from '@/mcp-server/tools/render-escape.js';
 import { getOsvApiService } from '@/services/osv-api/osv-api-service.js';
+import { PackagePurlInput, PackageTupleInput } from '../package-input.js';
 import {
   boundResponse,
   nodeRevision,
@@ -47,28 +48,23 @@ function worstSeverity(labels: Array<string | null | undefined>): string | null 
   return best;
 }
 
-const PackageInputSchema = z.object({
-  name: z
-    .string()
-    .trim()
-    .regex(/\S/, 'Package name must not be blank — provide the exact package name for each row.')
-    .describe('Package name as it appears in the ecosystem.'),
-  ecosystem: z
-    .string()
-    .trim()
-    .regex(
-      /\S/,
-      'Ecosystem must not be blank — provide a valid ecosystem identifier for each row (see osv_list_ecosystems).',
-    )
-    .describe(
-      'Ecosystem identifier. Case-sensitive exact match. Use osv_list_ecosystems to validate.',
-    ),
-  version: z
-    .string()
-    .trim()
-    .regex(/\S/, 'Version must not be blank — provide the exact version string for each row.')
-    .describe('Exact version string to check.'),
-});
+const PackageInputSchema = z.union([
+  PackageTupleInput.extend({
+    purl: PackagePurlInput.shape.purl
+      .optional()
+      .describe('Use purl instead of the tuple, never together with name or ecosystem.'),
+  })
+    .superRefine((input, ctx) => {
+      if (input.purl !== undefined)
+        ctx.addIssue({
+          code: 'custom',
+          path: ['purl'],
+          message: 'Provide purl or name/ecosystem, never both.',
+        });
+    })
+    .describe('Exact package tuple.'),
+  PackagePurlInput.describe('PURL alternative with exactly one version source.'),
+]);
 
 const BatchVulnSchema = z.object({
   id: z.string().describe('OSV vulnerability ID.'),
@@ -76,7 +72,7 @@ const BatchVulnSchema = z.object({
   aliases: z
     .array(z.string().describe('A CVE ID or other alias.'))
     .describe(
-      'CVE IDs and other aliases. Accepted by nist-nvd-mcp-server for CVSS/KEV/EPSS context.',
+      'CVE IDs and other aliases. Accepted by nist-nvd-mcp-server for CVSS scores and CISA KEV status.',
     ),
   severityLabel: z
     .string()
@@ -95,6 +91,12 @@ const PerPackageResultSchema = z.object({
   name: z.string().describe('Package name from input.'),
   ecosystem: z.string().describe('Ecosystem from input.'),
   version: z.string().describe('Version from input.'),
+  purl: z
+    .string()
+    .optional()
+    .describe(
+      'Original PURL when supplied; name, ecosystem and version show its effective coordinate on success.',
+    ),
   vulnerable: z.boolean().describe('True if any vulnerabilities were found.'),
   truncated: z
     .boolean()
@@ -160,6 +162,11 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
   const { summary } = BatchFullOutput.parse(result);
   // OSV-sourced strings pass through the render escape; name/ecosystem/version echo caller input.
   const esc = escapeAdvisoryInline;
+  for (const pkg of result.results)
+    if (pkg.purl !== undefined)
+      lines.push(
+        `**PURL:** ${esc(pkg.purl)}${pkg.error === null ? ` → ${esc(pkg.name)}@${esc(pkg.version)} (${esc(pkg.ecosystem)})` : ''}`,
+      );
 
   lines.push('## OSV Batch Scan Summary\n');
   lines.push(`| Metric | Value |`);
@@ -223,7 +230,11 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
   if (errors.length > 0) {
     lines.push('\n## Errors\n');
     for (const pkg of errors) {
-      lines.push(`- \`${pkg.name}\` @ \`${pkg.version}\` (${pkg.ecosystem}): ${esc(pkg.error)}`);
+      lines.push(
+        pkg.purl === undefined
+          ? `- \`${pkg.name}\` @ \`${pkg.version}\` (${pkg.ecosystem}): ${esc(pkg.error)}`
+          : `- ${esc(pkg.purl)}: ${esc(pkg.error)}`,
+      );
     }
   }
 
@@ -233,14 +244,14 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
 export const osvQueryBatch = tool('osv_query_batch', {
   description:
     'Query vulnerabilities for multiple packages in one call — the primary tool for dependency audits, ' +
-    'SBOM scanning, and lockfile triage. Pass an array of {name, ecosystem, version} tuples (up to 1000). ' +
+    'SBOM scanning, and lockfile triage. Pass up to 1000 mixed {name, ecosystem, version} tuples and {purl, version?} identifiers, with exactly one embedded or separate version per PURL. ' +
     'Each entry in the response corresponds positionally to the input. ' +
-    'Each finding includes CVE aliases for chaining to nist-nvd-mcp-server for CVSS scoring. Large replies retain the complete summary and announce page retrieval. Reuse packages with /results or an original-index descendant; fresh row pages do not recompute aggregate counts.',
+    'Each finding includes CVE aliases for chaining to nist-nvd-mcp-server for CVSS scoring. Large replies retain the complete summary. For overflow, repeat the original packages array with page: overflow.page. Continue the same path with offset: page.nextOffset and revision: page.revision until nextOffset is null. Retrieve each entries[].deferred.path separately at offset zero without a revision. Do not pass the output page object as input. /results/17 selects original input row 17, even when earlier rows failed. Pages are fresh lookups and do not recompute the initial summary; restart a changed node without a revision. Transmission overflow and upstream truncated are separate; neither confirms clean.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
 
   input: z.object({
     page: PageInput.optional().describe(
-      'Retrieve original-index rows at /results or a selected /results/17/... node with the original packages array.',
+      'Repeat the original packages array with page: overflow.page first. Continue using path, offset: page.nextOffset and revision: page.revision. /results/17/... keeps original row index 17; start deferred children without a revision.',
     ),
     packages: z
       .array(PackageInputSchema.describe('One package to audit.'))
@@ -287,6 +298,9 @@ export const osvQueryBatch = tool('osv_query_batch', {
 
   async handler(input, ctx) {
     ctx.log.info('OSV batch query', { packageCount: input.packages.length });
+    const packages = input.packages.map((pkg) =>
+      'name' in pkg ? { name: pkg.name, ecosystem: pkg.ecosystem, version: pkg.version } : pkg,
+    );
 
     const service = getOsvApiService();
     const rowContext = input.page
@@ -296,6 +310,7 @@ export const osvQueryBatch = tool('osv_query_batch', {
       name: r.name,
       ecosystem: r.ecosystem,
       version: r.version,
+      ...(r.purl === undefined ? {} : { purl: r.purl }),
       vulnerable: r.vulns.length > 0,
       truncated: r.truncated,
       error: r.error,
@@ -303,7 +318,7 @@ export const osvQueryBatch = tool('osv_query_batch', {
       vulns: r.vulns,
     });
     const fetchRow = async (index: number) => {
-      const pkg = input.packages[index];
+      const pkg = packages[index];
       if (!pkg)
         throw validationError('Unknown original batch row index.', { reason: 'invalid_page_path' });
       const [row] = await service.queryBatch([pkg], rowContext);
@@ -332,19 +347,10 @@ export const osvQueryBatch = tool('osv_query_batch', {
         'Batch pages select /results or /results/<index>/... only. Make a fresh initial call for aggregate summary.',
         { reason: 'invalid_page_path' },
       );
-    const rawResults = await service.queryBatch(input.packages, ctx);
+    const rawResults = await service.queryBatch(packages, ctx);
 
     // Build typed result rows
-    const results = rawResults.map((r) => ({
-      name: r.name,
-      ecosystem: r.ecosystem,
-      version: r.version,
-      vulnerable: r.vulns.length > 0,
-      truncated: r.truncated,
-      error: r.error,
-      vulnCount: r.vulns.length,
-      vulns: r.vulns,
-    }));
+    const results = rawResults.map(project);
 
     // Aggregate stats. A truncated row is never counted as clean — its result may
     // be incomplete, so "clean" requires no vulns, no error, AND not truncated.

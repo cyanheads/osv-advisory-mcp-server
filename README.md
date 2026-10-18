@@ -1,7 +1,7 @@
 <div align="center">
   <h1>@cyanheads/osv-advisory-mcp-server</h1>
   <p><b>Query OSV.dev for package vulnerabilities, batch-audit dependency lists, and fetch full advisory records via MCP. STDIO or Streamable HTTP.</b>
-  <div>4 Tools</div>
+  <div>5 Tools</div>
   </p>
 </div>
 
@@ -29,14 +29,15 @@
 
 ## Overview
 
-Vulnerability data from OSV.dev, the open-source vulnerability database. Query a single package version, batch-audit a full dependency list or SBOM, and fetch complete advisory records with CVSS severity, CVE aliases, and affected version ranges.
+Vulnerability data from OSV.dev, the open-source vulnerability database. Query a package version or Git commit, batch-audit a dependency list or SBOM, and fetch complete advisory records with CVSS severity, CVE aliases, and affected version ranges.
 
 ### Tools
 
 | Tool | Description |
 |:---|:---|
-| `osv_query_package` | Query known vulnerabilities for a single package version by name, ecosystem, and version |
+| `osv_query_package` | Query a package version by name/ecosystem/version or Package URL (PURL) |
 | `osv_query_batch` | Audit up to 1000 package versions in one call — a full dependency list or SBOM |
+| `osv_query_commit` | Query known vulnerabilities for a full Git commit hash |
 | `osv_get_vulnerability` | Fetch the full advisory record for a single OSV vulnerability ID |
 | `osv_list_ecosystems` | Return the list of supported ecosystem identifier strings |
 
@@ -44,7 +45,7 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 
 ### `osv_query_package` <sub>tool</sub>
 
-- `name`, `ecosystem` (case-sensitive exact match), and `version` — an exact version, not a range
+- Provide `name`, `ecosystem` (case-sensitive exact match), and `version`, or a `purl` such as `pkg:pypi/jinja2@3.1.4`. A PURL needs exactly one version: embedded in the URL or supplied separately. Versions are exact, never ranges
 - Each advisory carries CVE `aliases`, `severityLabel` with its `severitySource`, the queried package's `fixedVersions`, `affectedRanges`, and `cweIds`
 - `truncated: true` means OSV had more pages than `OSV_QUERY_MAX_PAGES` follows, so an empty `vulns` list is not a clean result; an unrecognized ecosystem fails as `invalid_ecosystem`
 
@@ -52,9 +53,17 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 
 ### `osv_query_batch` <sub>tool</sub>
 
-- 1–1000 `{name, ecosystem, version}` tuples per call; `results[i]` matches `packages[i]`
+- 1–1000 `{name, ecosystem, version}` tuples or `{purl, version?}` entries per call; mix either form, and `results[i]` matches `packages[i]`
 - Each row carries `vulnerable`, `vulnCount`, `vulns`, `truncated`, and `error`; a failure lands in the affected rows' `error` instead of failing the call
 - `summary` totals the scan (`vulnerableCount`, `cleanCount`, `truncatedCount`, `errorCount`, `totalVulns`, `worstSeverity`), and truncated rows never count as clean. The whole scan has a 50-second deadline
+
+---
+
+### `osv_query_commit` <sub>tool</sub>
+
+- One full `commit`: 40 hexadecimal characters for SHA-1 or 64 for SHA-256; either letter case is accepted, abbreviations are rejected
+- Advisories retain record-wide severity, aliases, and GIT ranges with repository URLs and ordered events. No package-specific `fixedVersions` are inferred
+- `truncated: true` means more OSV pages remain; an empty truncated result is not confirmed clean
 
 ---
 
@@ -85,7 +94,7 @@ Agent-friendly output:
 
 - Truncation is never read as clean — `truncated` flags incomplete OSV pagination, and truncated batch rows are left out of `cleanCount`
 - `aliases` (CVE IDs) on every advisory chain to `nist-nvd-mcp-server` for CVSS base scores and CISA KEV status
-- Responses are capped at 24,000 bytes; a larger one returns an `overflow` preview with `page` arguments for fetching the rest
+- Responses are capped at 24,000 bytes. Start retrieval by repeating the original input with `page: overflow.page`. Continue the same `path` with `offset: page.nextOffset` and `revision: page.revision` until `nextOffset` is null. Fetch each `entries[].deferred.path` separately at offset zero without a revision; never copy the whole output `page` object into the input
 - Advisory text in `content[]` is escaped so it can't render as live HTML or links; `structuredContent` keeps every OSV string verbatim
 
 ## Getting started
@@ -208,7 +217,7 @@ All configuration is validated at startup, and every variable is optional.
 |:---------|:------------|:--------|
 | `OSV_REQUEST_TIMEOUT_MS` | HTTP request timeout for OSV.dev API calls, in milliseconds. | `10000` |
 | `OSV_BATCH_CONCURRENCY` | Maximum concurrent OSV.dev requests issued by `osv_query_batch`. | `10` |
-| `OSV_QUERY_MAX_PAGES` | Maximum OSV.dev result pages followed per package before a result is marked `truncated`. | `10` |
+| `OSV_QUERY_MAX_PAGES` | Maximum OSV.dev result pages followed per package or commit before a result is marked `truncated`. | `10` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | Port for HTTP server. | `3010` |
 | `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path. | `/mcp` |
@@ -263,7 +272,7 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 |:----------|:--------|
 | `src/index.ts` | `createApp()` entry point — registers tools and inits services. |
 | `src/config` | Server-specific environment variable parsing and validation with Zod. |
-| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — `osv_query_package`, `osv_query_batch`, `osv_get_vulnerability`, `osv_list_ecosystems`. |
+| `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — `osv_query_package`, `osv_query_batch`, `osv_query_commit`, `osv_get_vulnerability`, `osv_list_ecosystems`. |
 | `src/services/osv-api` | OSV.dev REST API service — fetch, retry, response normalization. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
 

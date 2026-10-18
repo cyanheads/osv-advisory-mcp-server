@@ -8,6 +8,8 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { escapeAdvisoryInline } from '@/mcp-server/tools/render-escape.js';
 import type { OsvPackageVulnerability } from '@/services/osv-api/osv-api-service.js';
 import { getOsvApiService } from '@/services/osv-api/osv-api-service.js';
+import { resolvePackage } from '@/services/osv-api/package-identifier.js';
+import { PackagePurlInput, PackageTupleInput } from '../package-input.js';
 import {
   boundResponse,
   PageInput,
@@ -117,7 +119,8 @@ const SeveritySourceSchema = z
   .nullable()
   .describe('The severity entry severityLabel was derived from. Null exactly when the label is.');
 
-const VulnOutputSchema = z.object({
+/** Advisory summary fields shared by package and commit query projections. */
+export const VulnOutputSchema = z.object({
   id: z
     .string()
     .describe(
@@ -128,7 +131,7 @@ const VulnOutputSchema = z.object({
     .array(z.string().describe('A CVE ID or other alias.'))
     .describe(
       'Alternative IDs — typically CVE IDs (e.g. ["CVE-2020-28500"]). ' +
-        'Accepted by nist-nvd-mcp-server for CVSS scores, EPSS, and CISA KEV status.',
+        'Accepted by nist-nvd-mcp-server for CVSS scores and CISA KEV status.',
     ),
   severity: z
     .array(SeverityEntrySchema.describe('One record-level severity entry.'))
@@ -175,6 +178,7 @@ const PackageFullOutput = z.object({
       package: z.string().describe('Queried package name.'),
       ecosystem: z.string().describe('Queried ecosystem.'),
       version: z.string().describe('Queried version.'),
+      purl: z.string().optional().describe('Original PURL when used instead of the package tuple.'),
       vulnCount: z.number().describe('Number of vulnerabilities found.'),
     })
     .describe('Query parameters as submitted.'),
@@ -191,6 +195,7 @@ function renderPackage(
   lines.push(
     `**Package:** \`${queryMeta.package}\` @ \`${queryMeta.version}\` (${queryMeta.ecosystem}) — ${queryMeta.vulnCount} vuln(s)\n`,
   );
+  if (queryMeta.purl !== undefined) lines.push(`**PURL:** ${escapeAdvisoryInline(queryMeta.purl)}`);
 
   if (result.vulns.length === 0) {
     lines.push(
@@ -264,53 +269,58 @@ function renderPackage(
   return [{ type: 'text', text: lines.join('\n') }, ...retrieval];
 }
 
+const PackagePageInput = PageInput.extend({
+  advisoryId: z
+    .string()
+    .max(1024)
+    .optional()
+    .describe(
+      'ID from this query’s advisory list. Retain this ID when continuing its fields with fixes and severity for the original package.',
+    ),
+})
+  .strict()
+  .optional()
+  .describe(
+    'Repeat the original input with page: overflow.page first; later select path, offset: page.nextOffset and revision: page.revision. Retain advisoryId when set.',
+  );
+
 export const osvQueryPackage = tool('osv_query_package', {
   description:
-    'Query known vulnerabilities for a single package version across any supported ecosystem. ' +
+    'Query known vulnerabilities for a single package version using {name, ecosystem, version} or {purl, version?}; supply exactly one embedded or separate version. ' +
     'Returns all matching OSV advisories with severity (CVSS vectors), CVE aliases, affected version ranges, ' +
     'and the fixed versions listed for the queried package. ' +
     'Use osv_list_ecosystems to validate the ecosystem string before querying — ecosystem strings are ' +
-    'case-sensitive exact matches and an invalid value returns an error, not empty results. Large replies carry overflow and a compact advisory list when it fits; retrieve fields with page, using advisoryId for one package-scoped advisory GET.',
+    'case-sensitive exact matches and an invalid value returns an error, not empty results. For overflow, repeat the original input with page: overflow.page. Continue the same path with offset: page.nextOffset and revision: page.revision until nextOffset is null. Retrieve each entries[].deferred.path separately at offset zero without a revision. Do not pass the output page object as input. Set page.advisoryId to an announced ID to fetch its fields with fixes and severity for the queried package; retain advisoryId on subsequent pages. Pages are fresh lookups; restart a changed node without a revision. Transmission overflow and upstream truncated are separate; neither confirms clean.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
 
-  input: z.object({
-    page: PageInput.extend({
-      advisoryId: z
-        .string()
-        .max(1024)
+  input: z
+    .object({
+      ...PackageTupleInput.partial().shape,
+      purl: PackagePurlInput.shape.purl
         .optional()
         .describe(
-          'ID announced in this package advisory list; one GET with package-scoped normalization.',
+          'PURL alternative to name and ecosystem; supply one embedded or separate version.',
         ),
+      page: PackagePageInput,
     })
-      .strict()
-      .optional()
-      .describe('Retrieve an announced field or advisory with the original package tuple.'),
-    name: z
-      .string()
-      .trim()
-      .regex(/\S/, 'Package name must not be blank — provide the exact package name.')
-      .describe(
-        'Package name as it appears in the ecosystem (e.g. "express", "requests", "serde"). Case-sensitive.',
-      ),
-    ecosystem: z
-      .string()
-      .trim()
-      .regex(
-        /\S/,
-        'Ecosystem must not be blank — provide a valid ecosystem identifier (see osv_list_ecosystems).',
-      )
-      .describe(
-        'Ecosystem identifier. Must be an exact match (case-sensitive). Use osv_list_ecosystems to see valid values. Examples: "npm", "PyPI", "crates.io", "Go", "Maven", "NuGet".',
-      ),
-    version: z
-      .string()
-      .trim()
-      .regex(/\S/, 'Version must not be blank — provide the exact version string to check.')
-      .describe(
-        'Package version to check (e.g. "4.17.1", "3.1.4", "1.0.0"). Must be an exact version string, not a range.',
-      ),
-  }),
+    .superRefine((input, ctx) => {
+      if (input.purl !== undefined) {
+        if (input.name !== undefined || input.ecosystem !== undefined)
+          ctx.addIssue({
+            code: 'custom',
+            path: ['purl'],
+            message: 'Provide purl or name/ecosystem, never both.',
+          });
+      } else {
+        for (const field of ['name', 'ecosystem', 'version'] as const)
+          if (input[field] === undefined)
+            ctx.addIssue({
+              code: 'custom',
+              path: [field],
+              message: `Provide ${field} for a tuple query, or use purl.`,
+            });
+      }
+    }),
 
   output: PackageOutput,
 
@@ -330,6 +340,35 @@ export const osvQueryPackage = tool('osv_query_package', {
   },
 
   errors: [
+    {
+      reason: 'invalid_purl',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The PURL is malformed.',
+      recovery:
+        'Provide a complete pkg:type/name@version URL or a versionless PURL and separate version.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'unsupported_purl',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'OSV does not support this PURL type or namespace.',
+      recovery: 'Use a supported PURL or provide the name, ecosystem and version tuple.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'invalid_purl_version',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'Both or neither version sources were supplied.',
+      recovery:
+        'Supply exactly one version, embedded in the PURL or as the separate version field.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'invalid_purl_query',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'OSV rejected the PURL query.',
+      recovery: 'Check the PURL and its version against OSV supported identifiers, or use a tuple.',
+    },
     {
       reason: 'invalid_page_path',
       code: JsonRpcErrorCode.ValidationError,
@@ -359,7 +398,17 @@ export const osvQueryPackage = tool('osv_query_package', {
     },
   ],
 
-  async handler(input, ctx) {
+  async handler(request, ctx) {
+    const resolved = resolvePackage(
+      request.purl !== undefined
+        ? { purl: request.purl, version: request.version }
+        : PackageTupleInput.parse({
+            name: request.name,
+            ecosystem: request.ecosystem,
+            version: request.version,
+          }),
+    );
+    const input = { ...resolved, page: request.page };
     ctx.log.info('OSV query', {
       name: input.name,
       ecosystem: input.ecosystem,
@@ -375,9 +424,13 @@ export const osvQueryPackage = tool('osv_query_package', {
       if (!advisory) throw ctx.fail('advisory_not_found');
       return pageNode(projectAdvisory(advisory), input.page, measurePackage);
     }
-    const result = await service.queryPackage(input.name, input.ecosystem, input.version, ctx);
+    const result =
+      input.purl === undefined
+        ? await service.queryPackage(input.name, input.ecosystem, input.version, ctx)
+        : await service.queryPackage(input.name, input.ecosystem, input.version, ctx, resolved);
 
     if (result.invalid) {
+      if (input.purl !== undefined) throw ctx.fail('invalid_purl_query', result.message);
       throw ctx.fail(
         'invalid_ecosystem',
         `Ecosystem "${input.ecosystem}" is not recognized by OSV.`,
@@ -405,6 +458,7 @@ export const osvQueryPackage = tool('osv_query_package', {
         package: input.name,
         ecosystem: input.ecosystem,
         version: input.version,
+        ...(input.purl === undefined ? {} : { purl: input.purl }),
         vulnCount: result.vulns.length,
       },
     };
