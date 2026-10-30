@@ -1,6 +1,6 @@
 # osv-advisory-mcp-server - Directory Structure
 
-Generated on: 2026-10-30 08:55:04
+Generated on: 2026-10-30 09:24:38
 
 ```text
 osv-advisory-mcp-server/
@@ -27,6 +27,7 @@ osv-advisory-mcp-server/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
+│   ├── 0.4.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md

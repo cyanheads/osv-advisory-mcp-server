@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-10-30
+
+Publish the OSV advisory guide and align response budgets with mcp-ts-core 0.13.18.
+
 ## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-10-18 · ⚠️ Breaking
 
 Query vulnerabilities by Package URL or full Git commit.
