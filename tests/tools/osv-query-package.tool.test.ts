@@ -912,7 +912,7 @@ describe('osvQueryPackage over a real service and stubbed OSV HTTP', () => {
       const text = contentText(result);
       expect(text).toContain('**Package:** `lodash` @ `4.17.21` (npm) — 0 vuln(s)');
       expect(text).toContain('No known vulnerabilities for lodash@4.17.21 (npm).');
-      expect(text).toContain('Query: lodash@4.17.21 (npm)');
+      expect(text).toContain('Query: `lodash@4.17.21 (npm)`');
       expect(text).not.toMatch(/` lodash|lodash `|` 4\.17\.21/);
     });
 

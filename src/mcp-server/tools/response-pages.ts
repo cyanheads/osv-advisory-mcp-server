@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import { z } from '@cyanheads/mcp-ts-core';
 import { validationError } from '@cyanheads/mcp-ts-core/errors';
+import { MarkdownBuilder } from '@cyanheads/mcp-ts-core/utils';
 import { escapeAdvisoryBlock } from './render-escape.js';
 
 /** Combined UTF-8 ceiling, excluding the transport envelope. */
@@ -200,8 +201,23 @@ export function wireMeasure(
   return (result) => {
     const content = format(result);
     const fields: string[] = [];
-    if (enrichment.notice !== undefined) fields.push(`> ${enrichment.notice}`);
-    if (enrichment.effectiveQuery !== undefined) fields.push(`Query: ${enrichment.effectiveQuery}`);
+    if (enrichment.notice !== undefined)
+      fields.push(
+        enrichment.notice
+          .split(/\r\n|\r|\n/)
+          .map((line) => (line === '' ? '>' : `> ${line}`))
+          .join('\n'),
+      );
+    if (enrichment.effectiveQuery !== undefined) {
+      const query = enrichment.effectiveQuery;
+      const literal =
+        query === ''
+          ? ''
+          : /[\r\n]/.test(query)
+            ? `\n${new MarkdownBuilder().codeBlock(query.replace(/\r\n?/g, '\n')).build()}\n`
+            : new MarkdownBuilder().inlineCode(query).build();
+      fields.push(`Query: ${literal}`);
+    }
     if (fields.length) content.push({ type: 'text', text: `\n\n${fields.join('\n\n')}` });
     return Buffer.byteLength(
       JSON.stringify({ structuredContent: { ...result, ...enrichment }, content }),
