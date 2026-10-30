@@ -14,7 +14,7 @@
 
 ### Resources
 
-None. All data is available through the tool surface; resources add no coverage the tools don't already provide, and this server's primary audience (automated DevSecOps agents) is tool-only.
+The published `osv-advisory-guide` is served through the MCP Skills extension and its skill resource. No advisory data resource duplicates the tool surface. The guide carries completion gates, package-scoped remediation decisions, and deferred page retrieval because those cross several calls; tool schemas retain each individual call's contract.
 
 ### Prompts
 

@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/osv-advisory-mcp-server</h1>
   <p><b>Query OSV.dev for package vulnerabilities, batch-audit dependency lists, and fetch full advisory records via MCP. STDIO or Streamable HTTP.</b>
-  <div>5 Tools</div>
+  <div>5 Tools · 1 Skill</div>
   </p>
 </div>
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.3.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/osv-advisory-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/osv-advisory-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/osv-advisory-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3%2B-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.3.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/osv-advisory-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/osv-advisory-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/osv-advisory-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4%2B-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -99,115 +99,32 @@ Agent-friendly output:
 
 ## Getting started
 
-### Public Hosted Instance
+Use the public hosted instance with Claude Code:
 
-A public instance is available at `https://osv-advisory.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
-
-```json
-{
-  "mcpServers": {
-    "osv-advisory-mcp-server": {
-      "type": "streamable-http",
-      "url": "https://osv-advisory.caseyjhand.com/mcp"
-    }
-  }
-}
+```sh
+claude mcp add --transport http osv-advisory-mcp-server https://osv-advisory.caseyjhand.com/mcp
 ```
 
-### Self-Hosted / Local
+Or run locally through npm:
 
-Add the following to your MCP client configuration file.
-
-```json
-{
-  "mcpServers": {
-    "osv-advisory-mcp-server": {
-      "type": "stdio",
-      "command": "bunx",
-      "args": ["@cyanheads/osv-advisory-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info"
-      }
-    }
-  }
-}
+```sh
+claude mcp add osv-advisory-mcp-server -- npx -y @cyanheads/osv-advisory-mcp-server
 ```
 
-Or with npx (no Bun required):
+For other MCP clients, add this to the client configuration:
 
 ```json
 {
   "mcpServers": {
     "osv-advisory-mcp-server": {
-      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cyanheads/osv-advisory-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info"
-      }
+      "args": ["-y", "@cyanheads/osv-advisory-mcp-server"]
     }
   }
 }
 ```
 
-Or with Docker:
-
-```json
-{
-  "mcpServers": {
-    "osv-advisory-mcp-server": {
-      "type": "stdio",
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-e", "MCP_TRANSPORT_TYPE=stdio",
-        "ghcr.io/cyanheads/osv-advisory-mcp-server:latest"
-      ]
-    }
-  }
-}
-```
-
-For Streamable HTTP, set the transport and start the server:
-
-```sh
-MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
-# Server listens at http://localhost:3010/mcp
-```
-
-### Prerequisites
-
-- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
-- No API key required — OSV.dev is fully public.
-
-### Installation
-
-1. **Clone the repository:**
-
-```sh
-git clone https://github.com/cyanheads/osv-advisory-mcp-server.git
-```
-
-2. **Navigate into the directory:**
-
-```sh
-cd osv-advisory-mcp-server
-```
-
-3. **Install dependencies:**
-
-```sh
-bun install
-```
-
-4. **Configure environment:**
-
-```sh
-cp .env.example .env
-# edit .env if needed (no required vars)
-```
+No API key is required. For Docker or a source build, see [Running the server](#running-the-server).
 
 ## Configuration
 
@@ -236,6 +153,15 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ### Local development
 
+Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+
+```sh
+git clone https://github.com/cyanheads/osv-advisory-mcp-server.git
+cd osv-advisory-mcp-server
+bun install
+cp .env.example .env
+```
+
 - **Build and run:**
 
   ```sh
@@ -260,11 +186,10 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 ### Docker
 
 ```sh
-docker build -t osv-advisory-mcp-server .
-docker run --rm -p 3010:3010 osv-advisory-mcp-server
+docker run --rm -p 3010:3010 ghcr.io/cyanheads/osv-advisory-mcp-server:latest
 ```
 
-The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `/var/log/osv-advisory-mcp-server`. OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them.
+The image defaults to HTTP transport, stateless session mode, and logs to `/var/log/osv-advisory-mcp-server`. For stdio, use `docker run -i --rm -e MCP_TRANSPORT_TYPE=stdio ghcr.io/cyanheads/osv-advisory-mcp-server:latest`. Build locally with `docker build -t osv-advisory-mcp-server .`; OpenTelemetry peers are installed by default — use `--build-arg OTEL_ENABLED=false` to omit them.
 
 ## Project structure
 
@@ -275,6 +200,7 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 | `src/mcp-server/tools` | Tool definitions (`*.tool.ts`) — `osv_query_package`, `osv_query_batch`, `osv_query_commit`, `osv_get_vulnerability`, `osv_list_ecosystems`. |
 | `src/services/osv-api` | OSV.dev REST API service — fetch, retry, response normalization. |
 | `tests/` | Unit and integration tests mirroring `src/`. |
+| `skills/` | Published dependency-audit and advisory-retrieval guide, also served over MCP. |
 
 ## Development guide
 

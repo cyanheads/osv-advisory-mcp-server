@@ -1,6 +1,6 @@
 # osv-advisory-mcp-server - Directory Structure
 
-Generated on: 2026-10-18 19:59:40
+Generated on: 2026-10-30 08:55:04
 
 ```text
 osv-advisory-mcp-server/
@@ -39,6 +39,8 @@ osv-advisory-mcp-server/
 │   ├── add-resource/
 │   │   └── SKILL.md
 │   ├── add-service/
+│   │   └── SKILL.md
+│   ├── add-skill/
 │   │   └── SKILL.md
 │   ├── add-test/
 │   │   └── SKILL.md
@@ -137,6 +139,9 @@ osv-advisory-mcp-server/
 │   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   └── tree.ts
+├── skills/
+│   └── osv-advisory-guide/
+│       └── SKILL.md
 ├── src/
 │   ├── config/
 │   │   └── server-config.ts
@@ -192,7 +197,8 @@ osv-advisory-mcp-server/
 │   ├── prompts/
 │   ├── resources/
 │   ├── scripts/
-│   │   └── check-ecosystems.test.ts
+│   │   ├── check-ecosystems.test.ts
+│   │   └── mcpb-runtime.test.ts
 │   ├── services/
 │   │   ├── affected-match.test.ts
 │   │   ├── identifier-timing.test.ts
@@ -211,7 +217,8 @@ osv-advisory-mcp-server/
 │       ├── osv-query-package.tool.test.ts
 │       ├── purl-query.test.ts
 │       ├── query-guidance.test.ts
-│       └── render-escape.test.ts
+│       ├── render-escape.test.ts
+│       └── wire-measure.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes
@@ -228,7 +235,9 @@ osv-advisory-mcp-server/
 ├── Dockerfile
 ├── LICENSE
 ├── manifest.json
+├── mcp.json
 ├── package.json
+├── plugin.json
 ├── README.md
 ├── server.json
 ├── tsconfig.build.json
