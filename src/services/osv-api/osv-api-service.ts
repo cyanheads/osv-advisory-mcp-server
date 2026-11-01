@@ -529,8 +529,8 @@ export class OsvApiService {
         pkg = resolvePackage(input);
       } catch (cause) {
         pkg = {
-          name: '',
-          ecosystem: '',
+          name: input.name ?? '',
+          ecosystem: input.ecosystem ?? '',
           version: input.version ?? '',
           ...(input.purl === undefined ? {} : { purl: input.purl }),
         };

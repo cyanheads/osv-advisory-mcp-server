@@ -1,5 +1,5 @@
 /**
- * @fileoverview Render-boundary escape for advisory text in tool `content[]`.
+ * @fileoverview Literal caller coordinates and bounded advisory escapes in tool `content[]`.
  * OSV strings are upstream-controlled Markdown. Rendered as-is, tag-shaped text becomes raw
  * HTML (a `<template>` in a summary hides the rest of the response), a reference definition
  * or a `](javascript:…)` tail can relink the server's own `[LABEL]` text, and frame-like tokens
@@ -9,6 +9,23 @@
  * grows linearly with input size.
  * @module mcp-server/tools/render-escape
  */
+
+import { escapeMarkdownInline, MarkdownBuilder } from '@cyanheads/mcp-ts-core/utils';
+
+/** Keep one-line coordinates in code spans; multiline values retain their line breaks. */
+export function callerCode(value: string): string {
+  return value.includes('\n') || value.includes('\r')
+    ? escapeMarkdownInline(value)
+    : new MarkdownBuilder().inlineCode(value).build();
+}
+
+/** Escape caller-bearing notices per line while retaining the framework blockquote layout. */
+export function renderCallerNotice(value: string): string {
+  return value
+    .split(/\r\n|\r|\n/)
+    .map((line) => (line === '' ? '>' : `> ${escapeMarkdownInline(line)}`))
+    .join('\n');
+}
 
 /** Line breaks CommonMark honors, plus the Unicode separators some renderers break on. */
 const LINE_BREAKS = /\r\n|\r|\n|\u2028|\u2029/g;

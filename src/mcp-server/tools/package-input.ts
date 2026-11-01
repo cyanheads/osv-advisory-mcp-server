@@ -20,7 +20,9 @@ export const PackageTupleInput = z.object({
     .string()
     .trim()
     .regex(/\S/, 'Version must not be blank — provide the exact version string.')
-    .describe('Exact package version, never a range.'),
+    .describe(
+      'Exact installed version from the lockfile, never a range. npm/crates.io require three numeric components with optional prerelease/build metadata or leading v; = and == exact pins are normalized.',
+    ),
 });
 
 /** PURL parsing errors are handled per row so invalid batch identifiers remain isolated. */
@@ -37,6 +39,8 @@ export const PackagePurlInput = z
       .trim()
       .regex(/\S/, 'Version must not be blank — provide the exact version string.')
       .optional()
-      .describe('Exact version only when the PURL does not embed one.'),
+      .describe(
+        'Exact installed version only when the PURL does not embed one; the same ecosystem-specific version rules apply.',
+      ),
   })
   .strict();

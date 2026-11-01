@@ -6,11 +6,10 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 
 /**
- * Supported ecosystem strings, last verified 2026-09-24. The rule: every member of the
+ * Supported ecosystem strings, last verified 2026-10-31. The rule: every member of the
  * `$defs.ecosystemName` enum in the OSV schema's `validation/schema.json` that live
- * `POST /v1/query` accepts, plus `GIT` — 51 named + `GIT` = 52. Schema membership alone
- * is not enough: a member OSV.dev still rejects (`Red Hat Lightwell` as of that date,
- * HTTP 400 `invalid ecosystem`) is withheld until it is accepted. `GIT` is valid through
+ * `POST /v1/query` accepts, plus `GIT` — 53 named + `GIT` = 54. Schema membership alone
+ * is not enough: a member OSV.dev still rejects is withheld until it is accepted. `GIT` is valid through
  * the `$defs.ecosystemWithSuffix` pattern, not the named enum. `GSD` is excluded: it is
  * a vulnerability-ID prefix (`GSD-2020-1000`, `$defs.prefix`), not an ecosystem.
  * `bun run check:ecosystems` reports drift against the live schema and API.
@@ -58,7 +57,9 @@ export const SUPPORTED_ECOSYSTEMS: readonly string[] = [
   'Photon OS',
   'Pub',
   'PyPI',
+  'Raspberry Pi OS',
   'Red Hat',
+  'Red Hat Lightwell',
   'Rocky Linux',
   'Root',
   'RubyGems',
@@ -76,7 +77,7 @@ export const SUPPORTED_ECOSYSTEMS: readonly string[] = [
 
 export const osvListEcosystems = tool('osv_list_ecosystems', {
   description:
-    'Return the supported ecosystem identifier strings for osv_query_package and osv_query_batch: every ecosystem the OSV schema names that OSV.dev accepts at query time, plus GIT, as verified on 2026-09-24. Ecosystem strings are case-sensitive exact matches — passing "pypi" instead of "PyPI" returns an error from the API. Use this tool to discover valid ecosystem strings before querying, or to verify an ecosystem identifier from a lockfile format. The list is static and may lag ecosystems added after that date.',
+    'Return the supported ecosystem identifier strings for osv_query_package and osv_query_batch: every ecosystem the OSV schema names that OSV.dev accepts at query time, plus GIT, as verified on 2026-10-31. Ecosystem strings are case-sensitive exact matches — passing "pypi" instead of "PyPI" returns an error from the API. Use this tool to discover valid ecosystem strings before querying, or to verify an ecosystem identifier from a lockfile format. The list is static and may lag ecosystems added after that date.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
 
   input: z.object({}),
@@ -94,7 +95,7 @@ export const osvListEcosystems = tool('osv_list_ecosystems', {
     ctx.log.info('Listing OSV ecosystems', { count: SUPPORTED_ECOSYSTEMS.length });
     return {
       ecosystems: [...SUPPORTED_ECOSYSTEMS],
-      note: 'Every ecosystem the OSV schema (validation/schema.json) names that OSV.dev accepts at query time, plus GIT, as verified on 2026-09-24. A schema ecosystem OSV.dev does not yet accept is left out until it does. The list may lag later additions; OSV.dev is the authority at query time. Canonical reference: https://ossf.github.io/osv-schema/#affectedpackageecosystem-field',
+      note: 'Every ecosystem the OSV schema (validation/schema.json) names that OSV.dev accepts at query time, plus GIT, as verified on 2026-10-31. A schema ecosystem OSV.dev does not yet accept is left out until it does. The list may lag later additions; OSV.dev is the authority at query time. Canonical reference: https://ossf.github.io/osv-schema/#affectedpackageecosystem-field',
     };
   },
 

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OsvApiService } from '@/services/osv-api/osv-api-service.js';
 import { stubOsvApi } from '../helpers/osv-fixtures.js';
 
-const packages = ['a', 'b'].map((name) => ({ name, ecosystem: 'npm', version: '1' }));
+const packages = ['a', 'b'].map((name) => ({ name, ecosystem: 'npm', version: '1.0.0' }));
 const record = {
   id: 'shared',
   aliases: ['CVE-shared'],
@@ -116,7 +116,9 @@ describe('native batch', () => {
           page_token: i ? 'b1' : 'a1',
         })),
       },
-      { queries: [{ package: { name: 'a', ecosystem: 'npm' }, version: '1', page_token: 'a2' }] },
+      {
+        queries: [{ package: { name: 'a', ecosystem: 'npm' }, version: '1.0.0', page_token: 'a2' }],
+      },
     ]);
     expect(fetch).toHaveBeenCalledTimes(4);
   });
@@ -148,7 +150,7 @@ describe('native batch', () => {
       .mockResolvedValueOnce(Response.json(record));
     vi.stubGlobal('fetch', fetch);
     const rows = await new OsvApiService().queryBatch(
-      [...packages, { name: 'clean', ecosystem: 'npm', version: '1' }],
+      [...packages, { name: 'clean', ecosystem: 'npm', version: '1.0.0' }],
       createMockContext(),
     );
     expect(rows.map((row) => row.name)).toEqual(['a', 'b', 'clean']);
@@ -216,18 +218,18 @@ describe('native batch', () => {
     });
     vi.stubGlobal('fetch', fetch);
     const rows = await new OsvApiService({ maxQueryPages: 2 }).queryBatch(
-      [...packages, { name: 'c', ecosystem: 'npm', version: '1' }],
+      [...packages, { name: 'c', ecosystem: 'npm', version: '1.0.0' }],
       createMockContext(),
     );
     expect(native).toBe(3);
     expect(bodies.filter(({ path }) => path === '/v1/query')).toEqual([
       {
         path: '/v1/query',
-        body: { package: { name: 'a', ecosystem: 'npm' }, version: '1', page_token: 'a1' },
+        body: { package: { name: 'a', ecosystem: 'npm' }, version: '1.0.0', page_token: 'a1' },
       },
       {
         path: '/v1/query',
-        body: { package: { name: 'c', ecosystem: 'npm' }, version: '1', page_token: 'c1' },
+        body: { package: { name: 'c', ecosystem: 'npm' }, version: '1.0.0', page_token: 'c1' },
       },
     ]);
     expect(rows[0]).toMatchObject({ truncated: true, error: null, vulns: [{ id: 'shared' }] });
@@ -247,7 +249,7 @@ describe('native batch', () => {
     );
     vi.stubGlobal('fetch', fetch);
     const rows = await new OsvApiService().queryBatch(
-      [...packages, { name: 'clean', ecosystem: 'npm', version: '1' }],
+      [...packages, { name: 'clean', ecosystem: 'npm', version: '1.0.0' }],
       createMockContext(),
     );
     expect(rows.map((row) => row.error !== null)).toEqual([true, true, false]);
@@ -290,7 +292,7 @@ describe('native batch', () => {
     );
     vi.stubGlobal('fetch', fetch);
     const rows = await new OsvApiService().queryBatch(
-      [...packages, { name: 'clean', ecosystem: 'npm', version: '1' }],
+      [...packages, { name: 'clean', ecosystem: 'npm', version: '1.0.0' }],
       createMockContext(),
     );
     expect(rows.map((row) => row.error)).toEqual([null, null, null]);

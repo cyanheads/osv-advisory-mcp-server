@@ -10,7 +10,8 @@ import {
   serviceUnavailable,
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
-import { escapeAdvisoryInline } from '@/mcp-server/tools/render-escape.js';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
+import { callerCode, escapeAdvisoryInline } from '@/mcp-server/tools/render-escape.js';
 import { getOsvApiService } from '@/services/osv-api/osv-api-service.js';
 import { PackagePurlInput, PackageTupleInput } from '../package-input.js';
 import {
@@ -132,6 +133,17 @@ const BatchFullOutput = z.object({
           'Packages whose OSV results were truncated (may be incomplete). A truncated package with no findings is NOT counted as clean.',
         ),
       errorCount: z.number().describe('Packages that returned an error (e.g. invalid ecosystem).'),
+      vulnerableRows: z
+        .array(z.number().int().describe('Zero-based original input index.'))
+        .describe('Ascending indices of vulnerable rows; may overlap truncatedRows.'),
+      errorRows: z
+        .array(z.number().int().describe('Zero-based original input index.'))
+        .describe('Ascending indices of errored rows; may overlap truncatedRows.'),
+      truncatedRows: z
+        .array(z.number().int().describe('Zero-based original input index.'))
+        .describe(
+          'Ascending indices of upstream-truncated rows, including vulnerable and errored rows.',
+        ),
       totalVulns: z
         .number()
         .describe(
@@ -149,7 +161,9 @@ const BatchFullOutput = z.object({
 const BatchOutput = BatchFullOutput.partial().extend(RetrievalOutput.shape);
 
 function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text'; text: string }> {
-  const retrieval = renderRetrieval(result);
+  const retrieval = renderRetrieval(result, (path) =>
+    /^\/results\/\d+\/(name|ecosystem|version|purl)$/.test(path),
+  );
   if (result.results === undefined) {
     if (result.summary)
       retrieval.unshift({
@@ -165,7 +179,7 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
   for (const pkg of result.results)
     if (pkg.purl !== undefined)
       lines.push(
-        `**PURL:** ${esc(pkg.purl)}${pkg.error === null ? ` → ${esc(pkg.name)}@${esc(pkg.version)} (${esc(pkg.ecosystem)})` : ''}`,
+        `**PURL:** ${escapeMarkdownInline(pkg.purl)}${pkg.error === null ? ` → ${escapeMarkdownInline(pkg.name)}@${escapeMarkdownInline(pkg.version)} (${escapeMarkdownInline(pkg.ecosystem)})` : ''}`,
       );
 
   lines.push('## OSV Batch Scan Summary\n');
@@ -178,6 +192,8 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
   lines.push(`| Errors | ${summary.errorCount} |`);
   lines.push(`| Total vulns | ${summary.totalVulns} |`);
   lines.push(`| Worst severity | ${summary.worstSeverity ?? 'N/A'} |`);
+  for (const key of ['vulnerableRows', 'errorRows', 'truncatedRows'] as const)
+    lines.push(`${key}: ${JSON.stringify(summary[key])}`);
 
   const vulnerable = result.results.filter((r) => r.vulnerable);
   if (vulnerable.length > 0) {
@@ -186,7 +202,9 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
       const trunc = pkg.truncated
         ? ' — ⚠️ truncated (more pages exist; list may be incomplete)'
         : '';
-      lines.push(`### \`${pkg.name}\` @ \`${pkg.version}\` (${pkg.ecosystem})${trunc}`);
+      lines.push(
+        `### ${callerCode(pkg.name)} @ ${callerCode(pkg.version)} (${escapeMarkdownInline(pkg.ecosystem)})${trunc}`,
+      );
       lines.push(`**Vulnerabilities: ${pkg.vulnCount}**`);
       for (const vuln of pkg.vulns) {
         const aliases =
@@ -213,7 +231,7 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
     );
     for (const pkg of incomplete) {
       lines.push(
-        `- \`${pkg.name}\` @ \`${pkg.version}\` (${pkg.ecosystem}) — ⚠️ truncated, results incomplete`,
+        `- ${callerCode(pkg.name)} @ ${callerCode(pkg.version)} (${escapeMarkdownInline(pkg.ecosystem)}) — ⚠️ truncated, results incomplete`,
       );
     }
   }
@@ -222,7 +240,9 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
   if (clean.length > 0) {
     lines.push(`\n## Clean Packages\n`);
     for (const pkg of clean) {
-      lines.push(`- \`${pkg.name}\` @ \`${pkg.version}\` (${pkg.ecosystem}) — clean`);
+      lines.push(
+        `- ${callerCode(pkg.name)} @ ${callerCode(pkg.version)} (${escapeMarkdownInline(pkg.ecosystem)}) — clean`,
+      );
     }
   }
 
@@ -232,8 +252,8 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
     for (const pkg of errors) {
       lines.push(
         pkg.purl === undefined
-          ? `- \`${pkg.name}\` @ \`${pkg.version}\` (${pkg.ecosystem}): ${esc(pkg.error)}`
-          : `- ${esc(pkg.purl)}: ${esc(pkg.error)}`,
+          ? `- ${callerCode(pkg.name)} @ ${callerCode(pkg.version)} (${escapeMarkdownInline(pkg.ecosystem)}): ${esc(pkg.error)}`
+          : `- ${escapeMarkdownInline(pkg.purl)}: ${esc(pkg.error)}`,
       );
     }
   }
@@ -354,9 +374,12 @@ export const osvQueryBatch = tool('osv_query_batch', {
 
     // Aggregate stats. A truncated row is never counted as clean — its result may
     // be incomplete, so "clean" requires no vulns, no error, AND not truncated.
-    const vulnerableCount = results.filter((r) => r.vulnerable).length;
-    const errorCount = results.filter((r) => r.error !== null).length;
-    const truncatedCount = results.filter((r) => r.truncated).length;
+    const vulnerableRows = results.flatMap((row, index) => (row.vulnerable ? [index] : []));
+    const errorRows = results.flatMap((row, index) => (row.error !== null ? [index] : []));
+    const truncatedRows = results.flatMap((row, index) => (row.truncated ? [index] : []));
+    const vulnerableCount = vulnerableRows.length;
+    const errorCount = errorRows.length;
+    const truncatedCount = truncatedRows.length;
     const cleanCount = results.filter(
       (r) => !r.vulnerable && r.error === null && !r.truncated,
     ).length;
@@ -370,6 +393,9 @@ export const osvQueryBatch = tool('osv_query_batch', {
       cleanCount,
       truncatedCount,
       errorCount,
+      vulnerableRows,
+      errorRows,
+      truncatedRows,
       totalVulns,
       worstSeverity: worst,
     };

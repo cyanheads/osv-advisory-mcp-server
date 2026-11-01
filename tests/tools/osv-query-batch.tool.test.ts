@@ -49,6 +49,177 @@ describe('osvQueryBatch', () => {
     mockService.queryBatch.mockReset();
   });
 
+  it('retains independent original-row memberships including both truncation overlaps', async () => {
+    const vuln = {
+      id: 'GHSA-test',
+      summary: '',
+      aliases: [],
+      severityLabel: null,
+      fixedVersions: [],
+    };
+    mockService.queryBatch.mockResolvedValue([
+      makeResult('clean', 'npm', '1.0.0'),
+      makeResult('vulnerable', 'npm', '1.0.0', [vuln]),
+      makeResult('overlap', 'npm', '1.0.0', [vuln], null, true),
+      makeResult('error', 'npm', '1.0.0', [], 'Failed'),
+      makeResult('error-overlap', 'npm', '1.0.0', [], 'Failed', true),
+      makeResult('incomplete', 'npm', '1.0.0', [], null, true),
+    ]);
+    const reply = await runToolContract(osvQueryBatch, {
+      packages: Array.from({ length: 6 }, () => ({
+        name: 'pkg',
+        ecosystem: 'npm',
+        version: '1.0.0',
+      })),
+    });
+    expect(reply.structuredContent).toMatchObject({
+      summary: {
+        vulnerableCount: 2,
+        vulnerableRows: [1, 2],
+        errorCount: 2,
+        errorRows: [3, 4],
+        truncatedCount: 3,
+        truncatedRows: [2, 4, 5],
+        cleanCount: 1,
+      },
+    });
+    expect(contentText(reply)).toContain('vulnerableRows: [1,2]');
+    expect(contentText(reply)).toContain('errorRows: [3,4]');
+    expect(contentText(reply)).toContain('truncatedRows: [2,4,5]');
+  });
+
+  it.each(['clean', 'vulnerable', 'incomplete', 'error'] as const)(
+    'renders caller coordinates literally in %s rows',
+    async (outcome) => {
+      const name = 'a`<b>y</b> [next](https://example.test)`b';
+      const ecosystem = '<i>eco</i> [next](https://example.test)';
+      const vuln = {
+        id: 'GHSA-test',
+        summary: '[advisory](https://advisory.test)',
+        aliases: [],
+        severityLabel: null,
+        fixedVersions: [],
+      };
+      mockService.queryBatch.mockResolvedValue([
+        makeResult(
+          name,
+          ecosystem,
+          '1.0.0',
+          outcome === 'vulnerable' ? [vuln] : [],
+          outcome === 'error' ? 'Failed' : null,
+          outcome === 'incomplete',
+        ),
+      ]);
+      const reply = await runToolContract(osvQueryBatch, {
+        packages: [{ name, ecosystem, version: '1.0.0' }],
+      });
+      expect(reply.structuredContent).toMatchObject({ results: [{ name, ecosystem }] });
+      const parsed = scanMarkdown(contentText(reply));
+      expect(parsed.html.filter((html) => /<\/?[bi]>/.test(html))).toEqual([]);
+      expect(parsed.links).toEqual(outcome === 'vulnerable' ? ['https://advisory.test'] : []);
+      expect(parsed.literalText).toContain(name);
+      expect(parsed.literalText).toContain(ecosystem);
+    },
+  );
+
+  it.each(['vulnerable-truncated', 'error-truncated', 'clean', 'tail'] as const)(
+    'keeps all 1000-row %s memberships within the assembled budget',
+    async (kind) => {
+      const packages = Array.from({ length: 1000 }, (_, i) => ({
+        name: `pkg${i}`,
+        ecosystem: 'npm',
+        version: '1.0.0',
+      }));
+      const vuln = {
+        id: 'GHSA-test',
+        summary: '[advisory](https://advisory.test)',
+        aliases: [],
+        severityLabel: 'HIGH',
+        fixedVersions: [],
+      };
+      mockService.queryBatch.mockImplementation(async (submitted: typeof packages) =>
+        submitted.map((pkg) =>
+          makeResult(
+            pkg.name,
+            pkg.ecosystem,
+            pkg.version,
+            kind === 'vulnerable-truncated' || (kind === 'tail' && Number(pkg.name.slice(3)) >= 990)
+              ? [vuln]
+              : [],
+            kind === 'error-truncated' ? 'Failed' : null,
+            kind.endsWith('truncated'),
+          ),
+        ),
+      );
+      const reply = await runToolContract(osvQueryBatch, { packages });
+      expect(reply.isError).not.toBe(true);
+      expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(24000);
+      const output = osvQueryBatch.output.parse(reply.structuredContent);
+      const indices = Array.from({ length: 1000 }, (_, i) => i);
+      expect(output.summary).toMatchObject({
+        vulnerableRows:
+          kind === 'vulnerable-truncated' ? indices : kind === 'tail' ? indices.slice(990) : [],
+        errorRows: kind === 'error-truncated' ? indices : [],
+        truncatedRows: kind.endsWith('truncated') ? indices : [],
+      });
+      const parsed = scanMarkdown(contentText(reply));
+      expect(parsed.literalText).toContain(JSON.stringify(output.summary!.vulnerableRows));
+      expect(parsed.literalText).toContain(JSON.stringify(output.summary!.errorRows));
+      expect(parsed.literalText).toContain(JSON.stringify(output.summary!.truncatedRows));
+      const selected = await runToolContract(osvQueryBatch, {
+        packages,
+        page: { path: '/results/999' },
+      });
+      expect(selected.structuredContent).not.toHaveProperty('summary');
+      expect(osvQueryBatch.output.parse(selected.structuredContent).page!.entries).toContainEqual({
+        key: 'name',
+        value: 'pkg999',
+      });
+    },
+  );
+
+  it('renders caller coordinates literally in original-index row pages', async () => {
+    const name = '<b>x</b> [next](https://example.test)';
+    const vuln = {
+      id: 'GHSA-test',
+      summary: '[advisory](https://advisory.test)',
+      aliases: [],
+      severityLabel: null,
+      fixedVersions: [],
+    };
+    mockService.queryBatch.mockResolvedValue([makeResult(name, 'npm', '1.0.0', [vuln])]);
+    for (const path of ['/results', '/results/0', '/results/0/name']) {
+      const reply = await runToolContract(osvQueryBatch, {
+        packages: [{ name, ecosystem: 'npm', version: '1.0.0' }],
+        page: { path },
+      });
+      expect(reply.isError).not.toBe(true);
+      const parsed = scanMarkdown(contentText(reply));
+      expect(parsed.links).not.toContain('https://example.test');
+      expect(parsed.literalText).toContain(name);
+      if (path !== '/results/0/name') expect(parsed.links).toContain('https://advisory.test');
+    }
+  });
+
+  it.each([null, 'Failed'])(
+    'renders PURLs literally on successful and errored rows: %j',
+    async (error) => {
+      const name = 'a`<b>x</b> [next](https://example.test)`b';
+      const purl = `pkg:npm/${encodeURIComponent(name)}@1.0.0`;
+      mockService.queryBatch.mockResolvedValue([
+        { ...makeResult(name, 'npm', '1.0.0', [], error), purl },
+      ]);
+      const reply = await runToolContract(osvQueryBatch, { packages: [{ purl }] });
+      expect(reply.isError).not.toBe(true);
+      expect(reply.structuredContent).toMatchObject({ results: [{ name, purl }] });
+      const parsed = scanMarkdown(contentText(reply));
+      expect(parsed.links).toEqual([]);
+      expect(parsed.html).toEqual([]);
+      expect(parsed.literalText).toContain(purl);
+      if (error === null) expect(parsed.literalText).toContain(name);
+    },
+  );
+
   it('retains the complete initial summary and retrieves only requested original-index rows', async () => {
     const packages = Array.from({ length: 25 }, (_, index) => ({
       name: `pkg${index}`,
@@ -423,6 +594,9 @@ describe('osvQueryBatch', () => {
         errorCount: 0,
         totalVulns: 1,
         worstSeverity: 'MODERATE',
+        vulnerableRows: [0],
+        errorRows: [],
+        truncatedRows: [],
       },
     };
     const blocks = osvQueryBatch.format!(output);
@@ -458,6 +632,9 @@ describe('osvQueryBatch', () => {
         errorCount: 0,
         totalVulns: 0,
         worstSeverity: null,
+        vulnerableRows: [],
+        errorRows: [],
+        truncatedRows: [],
       },
     };
     const blocks = osvQueryBatch.format!(output);
@@ -491,6 +668,9 @@ describe('osvQueryBatch', () => {
         errorCount: 1,
         totalVulns: 0,
         worstSeverity: null,
+        vulnerableRows: [],
+        errorRows: [0],
+        truncatedRows: [],
       },
     };
     const blocks = osvQueryBatch.format!(output);
@@ -612,6 +792,9 @@ describe('osvQueryBatch', () => {
         errorCount: 0,
         totalVulns: 0,
         worstSeverity: null,
+        vulnerableRows: [],
+        errorRows: [],
+        truncatedRows: [0],
       },
     };
     const blocks = osvQueryBatch.format!(output);
@@ -675,7 +858,7 @@ describe('osvQueryBatch over a real service and stubbed OSV HTTP', () => {
     const packages = Array.from({ length: 25 }, (_, index) => ({
       name: `pkg${index}`,
       ecosystem: 'npm',
-      version: '1',
+      version: '1.0.0',
     }));
     const selected = await runToolContract(osvQueryBatch, {
       packages,
@@ -783,6 +966,9 @@ describe('osvQueryBatch over a real service and stubbed OSV HTTP', () => {
           errorCount: 1,
           totalVulns: 1,
           worstSeverity: null,
+          vulnerableRows: [0],
+          errorRows: [1],
+          truncatedRows: [],
         },
       }),
     });

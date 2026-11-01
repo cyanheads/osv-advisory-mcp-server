@@ -1,6 +1,6 @@
 # osv-advisory-mcp-server - Directory Structure
 
-Generated on: 2026-10-30 09:24:38
+Generated on: 2026-11-01 04:47:30
 
 ```text
 osv-advisory-mcp-server/
@@ -204,7 +204,8 @@ osv-advisory-mcp-server/
 │   │   ├── affected-match.test.ts
 │   │   ├── identifier-timing.test.ts
 │   │   ├── osv-api-service.test.ts
-│   │   └── osv-native-batch.test.ts
+│   │   ├── osv-native-batch.test.ts
+│   │   └── package-identifier.test.ts
 │   └── tools/
 │       ├── __snapshots__/
 │       │   ├── osv-get-vulnerability.tool.test.ts.snap
@@ -219,6 +220,7 @@ osv-advisory-mcp-server/
 │       ├── purl-query.test.ts
 │       ├── query-guidance.test.ts
 │       ├── render-escape.test.ts
+│       ├── response-pages.test.ts
 │       └── wire-measure.test.ts
 ├── .dockerignore
 ├── .env.example

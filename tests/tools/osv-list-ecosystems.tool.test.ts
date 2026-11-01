@@ -39,12 +39,12 @@ describe('osvListEcosystems', () => {
     expect(result.ecosystems).not.toContain('GSD');
   });
 
-  it('pins the catalog — 51 accepted schema names + GIT, Red Hat Lightwell and GSD absent (#12)', async () => {
+  it('pins the catalog — 53 accepted schema names + GIT, GSD absent (#12)', async () => {
     const ctx = createMockContext();
     const result = await osvListEcosystems.handler({}, ctx);
-    // Offline guard: the count is the schema's ecosystemName members OSV.dev accepts (51) plus GIT.
+    // Offline guard: the count is the schema's ecosystemName members OSV.dev accepts (53) plus GIT.
     // `bun run check:ecosystems` reports upstream drift; update SUPPORTED_ECOSYSTEMS and this number together.
-    expect(result.ecosystems).toHaveLength(52);
+    expect(result.ecosystems).toHaveLength(54);
     expect(new Set(result.ecosystems).size).toBe(result.ecosystems.length);
     // A representative slice of the catalog — including the entries earlier lists omitted.
     for (const eco of [
@@ -56,6 +56,8 @@ describe('osvListEcosystems', () => {
       'Homebrew',
       'Kubernetes',
       'Red Hat',
+      'Raspberry Pi OS',
+      'Red Hat Lightwell',
       'VSCode',
       'WordPress',
       'npm',
@@ -65,8 +67,11 @@ describe('osvListEcosystems', () => {
     ]) {
       expect(result.ecosystems).toContain(eco);
     }
-    // In the schema but rejected by POST /v1/query — withheld until OSV.dev accepts it.
-    expect(result.ecosystems).not.toContain('Red Hat Lightwell');
+    const text = osvListEcosystems.format!(result)
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('\n');
+    expect(text).toContain('`Raspberry Pi OS`');
+    expect(text).toContain('`Red Hat Lightwell`');
     // GSD is a vulnerability-ID prefix, not an ecosystem, and must never reappear.
     expect(result.ecosystems).not.toContain('GSD');
   });

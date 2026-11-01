@@ -9,7 +9,7 @@ import { osvQueryBatch } from '@/mcp-server/tools/definitions/osv-query-batch.to
 import { initOsvApiService } from '@/services/osv-api/osv-api-service.js';
 import { contentText } from '../helpers/markdown.js';
 
-const packages = ['a', 'b', 'clean'].map((name) => ({ name, ecosystem: 'npm', version: '1' }));
+const packages = ['a', 'b', 'clean'].map((name) => ({ name, ecosystem: 'npm', version: '1.0.0' }));
 beforeEach(() => initOsvApiService({ maxQueryPages: 1, batchConcurrency: 1 }));
 afterEach(() => {
   vi.restoreAllMocks();
@@ -44,7 +44,7 @@ it('renders capped and failed native rows as incomplete/errors on both surfaces'
   expect(text).toContain('NOT confirmed clean');
   expect(text).toContain('## Errors');
   expect(text).toContain('missing');
-  expect(text).toContain('`clean` @ `1` (npm) — clean');
+  expect(text).toContain('`clean` @ `1.0.0` (npm) — clean');
 });
 
 it('maps cancellation to RequestCancelled on both surfaces', async () => {

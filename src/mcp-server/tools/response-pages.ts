@@ -3,9 +3,10 @@
  * @module mcp-server/tools/response-pages
  */
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from '@cyanheads/mcp-ts-core';
 import { validationError } from '@cyanheads/mcp-ts-core/errors';
-import { MarkdownBuilder } from '@cyanheads/mcp-ts-core/utils';
+import { escapeMarkdownInline, MarkdownBuilder } from '@cyanheads/mcp-ts-core/utils';
 import { escapeAdvisoryBlock } from './render-escape.js';
 
 /** Combined UTF-8 ceiling, excluding the transport envelope. */
@@ -167,7 +168,57 @@ export function resolvePointer(root: unknown, path: string): unknown {
 }
 
 /** Render all retrieval arms through the finite advisory boundary. */
-export function renderRetrieval(result: Retrieval): Content {
+export function renderRetrieval(
+  result: Retrieval,
+  callerField?: (path: string) => boolean,
+): Content {
+  /** Map serialized retrieval locations back to their original normalized source fields. */
+  const sourcePath = (path: string[]): string | undefined => {
+    if (path[0] === 'preview') {
+      if (path[1] === 'rows' && path[3] === 'value') {
+        const rows = result.preview?.rows;
+        const row = Array.isArray(rows) ? rows[Number(path[2])] : undefined;
+        if (row && typeof row === 'object' && 'key' in row)
+          return `/results/${row.key}${path
+            .slice(4)
+            .map((key) => `/${key}`)
+            .join('')}`;
+      }
+      return `/${path.slice(1).join('/')}`;
+    }
+    if (path[0] === 'page' && result.page) {
+      if (path[1] === 'text') return result.page.path;
+      if (path[1] === 'entries' && path[3] === 'value') {
+        const entry = result.page.entries?.[Number(path[2])];
+        if (entry)
+          return `${childPointer(result.page.path, entry.key)}${path
+            .slice(4)
+            .map((key) => `/${key}`)
+            .join('')}`;
+      }
+    }
+    return undefined;
+  };
+  /** Serialize only caller-coordinate leaves literally; advisory Markdown retains its boundary. */
+  const json = (value: unknown, path: string[]): string => {
+    if (Array.isArray(value))
+      return `[${value.map((child, index) => json(child, [...path, String(index)])).join(',')}]`;
+    if (value !== null && typeof value === 'object')
+      return `{${Object.entries(value)
+        .filter(([, child]) => child !== undefined)
+        .map(
+          ([key, child]) =>
+            `${escapeAdvisoryBlock(JSON.stringify(key))}:${json(child, [...path, key])}`,
+        )
+        .join(',')}}`;
+    const encoded = JSON.stringify(value);
+    const source = sourcePath(path);
+    return typeof value === 'string' && source !== undefined && callerField?.(source)
+      ? escapeMarkdownInline(encoded)
+      : escapeAdvisoryBlock(encoded);
+  };
+  const renderJson = (value: unknown, key: string) =>
+    callerField ? json(value, [key]) : escapeAdvisoryBlock(JSON.stringify(value));
   const blocks: Content = [];
   for (const key of ['preview', 'overflow', 'page'] as const) {
     if (key === 'preview' && result.preview && Array.isArray(result.preview.vulns)) {
@@ -179,12 +230,12 @@ export function renderRetrieval(result: Retrieval): Content {
       );
       blocks.push({
         type: 'text',
-        text: `### preview\n<advisory_text>\n${escapeAdvisoryBlock(JSON.stringify(metadata))}\nAdvisories: id | aliases | severityLabel | fixedVersions\n${escapeAdvisoryBlock(rows.join('\n'))}\n</advisory_text>`,
+        text: `### preview\n<advisory_text>\n${renderJson(metadata, 'preview')}\nAdvisories: id | aliases | severityLabel | fixedVersions\n${escapeAdvisoryBlock(rows.join('\n'))}\n</advisory_text>`,
       });
     } else if (result[key] !== undefined)
       blocks.push({
         type: 'text',
-        text: `### ${key}\n<advisory_text>\n${escapeAdvisoryBlock(JSON.stringify(result[key]))}\n</advisory_text>`,
+        text: `### ${key}\n<advisory_text>\n${renderJson(result[key], key)}\n</advisory_text>`,
       });
   }
   return blocks;
@@ -197,16 +248,19 @@ export function renderRetrieval(result: Retrieval): Content {
 export function wireMeasure(
   format: (result: Retrieval & Record<string, unknown>) => unknown[],
   enrichment: { notice?: string; effectiveQuery?: string } = {},
+  renderNotice?: (notice: string) => string,
 ): Measure {
   return (result) => {
     const content = format(result);
     const fields: string[] = [];
     if (enrichment.notice !== undefined)
       fields.push(
-        enrichment.notice
-          .split(/\r\n|\r|\n/)
-          .map((line) => (line === '' ? '>' : `> ${line}`))
-          .join('\n'),
+        renderNotice
+          ? renderNotice(enrichment.notice)
+          : enrichment.notice
+              .split(/\r\n|\r|\n/)
+              .map((line) => (line === '' ? '>' : `> ${line}`))
+              .join('\n'),
       );
     if (enrichment.effectiveQuery !== undefined) {
       const query = enrichment.effectiveQuery;
@@ -391,24 +445,42 @@ export function boundResponse<T extends Record<string, unknown>>(
   source: Record<string, unknown> = full,
 ): T | (Retrieval & Record<string, unknown>) {
   if (measure(full) <= RESPONSE_BYTES) return full;
+  const classify = (survivingPreview?: Record<string, unknown>) => {
+    const complete = new Set(Object.keys(retained));
+    const omitted: z.infer<typeof Deferred>[] = [];
+    for (const [key, value] of Object.entries(source)) {
+      if (value === undefined || complete.has(key)) continue;
+      if (
+        survivingPreview !== undefined &&
+        Object.hasOwn(survivingPreview, key) &&
+        isDeepStrictEqual(survivingPreview[key], value)
+      ) {
+        complete.add(key);
+      } else {
+        omitted.push(descriptor(childPointer('', key), value));
+      }
+    }
+    return { complete: [...complete], omitted };
+  };
+  const overflow: NonNullable<Retrieval['overflow']> = {
+    ...classify(preview),
+    page: { path: '', offset: 0 },
+    notice:
+      'Output exceeds 24,000 UTF-8 bytes. Omitted values remain retrievable with page; repeat the original tool input. Re-fetches are fresh, not saved snapshots. Upstream truncation is separate.',
+  };
   const result: Retrieval & Record<string, unknown> = {
     ...retained,
-    overflow: {
-      complete: Object.keys(retained),
-      omitted: Object.entries(source)
-        .filter(([key, value]) => value !== undefined && !Object.hasOwn(retained, key))
-        .map(([key, value]) => descriptor(childPointer('', key), value)),
-      page: { path: '', offset: 0 },
-      notice:
-        'Output exceeds 24,000 UTF-8 bytes. Omitted values remain retrievable with page; repeat the original tool input. Re-fetches are fresh, not saved snapshots. Upstream truncation is separate.',
-    },
+    overflow,
   };
   if (preview !== undefined) {
     result.preview = preview;
-    if (measure(result) > RESPONSE_BYTES) delete result.preview;
-    if (Object.hasOwn(preview, 'vulns') && result.preview === undefined && result.overflow)
-      result.overflow.notice +=
-        ' The advisory list is incomplete in this reply; retrieve /vulns for its entries.';
+    if (measure(result) > RESPONSE_BYTES) {
+      delete result.preview;
+      Object.assign(overflow, classify());
+      if (Object.hasOwn(preview, 'vulns'))
+        overflow.notice +=
+          ' The advisory list is incomplete in this reply; retrieve /vulns for its entries.';
+    }
   }
   return result;
 }

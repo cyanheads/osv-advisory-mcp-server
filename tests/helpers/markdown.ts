@@ -18,13 +18,22 @@ export interface MarkdownScan {
   html: string[];
   /** Destinations of every link, autolinks included. */
   links: string[];
+  /** Text and code literals, with rendered line breaks, in document order. */
+  literalText: string;
   /** Every text-node literal, concatenated — what a reader sees outside code. */
   text: string;
 }
 
 /** Parse Markdown and collect its HTML, link, code-block, and text nodes. */
 export function scanMarkdown(markdown: string): MarkdownScan {
-  const scan: MarkdownScan = { autolinks: [], codeBlocks: [], html: [], links: [], text: '' };
+  const scan: MarkdownScan = {
+    autolinks: [],
+    codeBlocks: [],
+    html: [],
+    links: [],
+    text: '',
+    literalText: '',
+  };
   const walker = parser.parse(markdown).walker();
   for (let step = walker.next(); step; step = walker.next()) {
     if (!step.entering) continue;
@@ -36,9 +45,18 @@ export function scanMarkdown(markdown: string): MarkdownScan {
         break;
       case 'code_block':
         scan.codeBlocks.push(node.literal ?? '');
+        scan.literalText += node.literal ?? '';
         break;
       case 'text':
         scan.text += node.literal ?? '';
+        scan.literalText += node.literal ?? '';
+        break;
+      case 'code':
+        scan.literalText += node.literal ?? '';
+        break;
+      case 'softbreak':
+      case 'linebreak':
+        scan.literalText += '\n';
         break;
       case 'link': {
         const destination = node.destination ?? '';

@@ -10,7 +10,7 @@ export type PackageIdentifier =
   | { name: string; ecosystem: string; version: string; purl?: never }
   | { purl: string; version?: string | undefined; name?: never; ecosystem?: never };
 
-/** Canonical matcher coordinate plus the unchanged upstream PURL, when supplied. */
+/** Matcher coordinate plus original and, when normalized, wire PURL identities. */
 export interface ResolvedPackage {
   ecosystem: string;
   /** Omit the separate upstream version when it was embedded in the PURL. */
@@ -18,6 +18,7 @@ export interface ResolvedPackage {
   name: string;
   purl?: string;
   version: string;
+  wirePurl?: string;
 }
 
 const ECOSYSTEMS: Record<string, string> = {
@@ -83,9 +84,65 @@ const DEBIAN_VERSIONS: Record<string, string> = {
   duke: '15',
 };
 
-/** Preserve tuple behavior and resolve a PURL without changing its upstream spelling. */
+/** OSV accepts leading zeros in exact numeric components for npm and crates.io. */
+function numericIdentifier(value: string): boolean {
+  return value.length > 0 && !/[^0-9]/.test(value);
+}
+
+/** Validate exact SemVer-shaped versions with linear scans, retaining OSV's leading-zero compatibility. */
+function isSemver(version: string): boolean {
+  const value = version.startsWith('v') ? version.slice(1) : version;
+  const plus = value.indexOf('+');
+  const build = plus < 0 ? undefined : value.slice(plus + 1);
+  if (
+    build !== undefined &&
+    !build.split('.').every((part) => part.length > 0 && !/[^0-9A-Za-z-]/.test(part))
+  )
+    return false;
+  const release = plus < 0 ? value : value.slice(0, plus);
+  const dash = release.indexOf('-');
+  const core = dash < 0 ? release : release.slice(0, dash);
+  const numbers = core.split('.');
+  if (numbers.length !== 3 || !numbers.every(numericIdentifier)) return false;
+  if (dash < 0) return true;
+  return release
+    .slice(dash + 1)
+    .split('.')
+    .every((part) => part.length > 0 && !/[^0-9A-Za-z-]/.test(part));
+}
+
+/** Reject only constraints whose meaning is established for this ecosystem. */
+function exactVersion(version: string, ecosystem: string): string {
+  let normalized = version;
+  let invalid = false;
+  if (ecosystem === 'npm' || ecosystem === 'crates.io') {
+    normalized = version.startsWith('==')
+      ? version.slice(2)
+      : version.startsWith('=')
+        ? version.slice(1)
+        : version;
+    invalid = !isSemver(normalized);
+  } else if (PEP_503_VERSION_ECOSYSTEMS.has(ecosystem)) {
+    invalid = /^[<>=!~]/.test(version);
+  } else if (ecosystem === 'RubyGems') {
+    invalid = /^[<>=!~]/.test(version);
+  } else if (ecosystem === 'Maven') {
+    invalid = version.startsWith('[') || version.startsWith('(');
+  }
+  if (invalid)
+    throw validationError(
+      'Pass the exact resolved version from the lockfile, such as 4.17.20, not a range or constraint.',
+      { reason: 'invalid_version' },
+    );
+  return normalized;
+}
+
+const PEP_503_VERSION_ECOSYSTEMS = new Set(['PyPI', 'Echo:PyPI', 'Red Hat Lightwell:PyPI']);
+
+/** Resolve exact versions while preserving original package and PURL spelling for echoes. */
 export function resolvePackage(input: PackageIdentifier): ResolvedPackage {
-  if (input.purl === undefined) return input;
+  if (input.purl === undefined)
+    return { ...input, version: exactVersion(input.version, input.ecosystem) };
   let parsed: PackageURL;
   try {
     parsed = PackageURL.fromString(input.purl);
@@ -126,12 +183,15 @@ export function resolvePackage(input: PackageIdentifier): ResolvedPackage {
     const distro = parsed.qualifiers.distro.toLowerCase();
     ecosystem += `:${Object.hasOwn(DEBIAN_VERSIONS, distro) ? DEBIAN_VERSIONS[distro] : distro}`;
   }
+  const normalizedVersion = exactVersion(version, ecosystem);
+  if (parsed.version && normalizedVersion !== version) parsed.version = normalizedVersion;
   return {
     name,
     ecosystem,
-    version,
+    version: normalizedVersion,
     purl: input.purl,
     embeddedVersion: Boolean(parsed.version),
+    ...(parsed.version && normalizedVersion !== version ? { wirePurl: parsed.toString() } : {}),
   };
 }
 
@@ -139,5 +199,8 @@ export function resolvePackage(input: PackageIdentifier): ResolvedPackage {
 export function packageBody(pkg: ResolvedPackage) {
   return pkg.purl === undefined
     ? { package: { name: pkg.name, ecosystem: pkg.ecosystem }, version: pkg.version }
-    : { package: { purl: pkg.purl }, ...(pkg.embeddedVersion ? {} : { version: pkg.version }) };
+    : {
+        package: { purl: pkg.wirePurl ?? pkg.purl },
+        ...(pkg.embeddedVersion ? {} : { version: pkg.version }),
+      };
 }

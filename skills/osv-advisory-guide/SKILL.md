@@ -28,6 +28,8 @@ Page paths and revisions come from the response being retrieved. Batch row index
 
 Audit resolved dependencies with `osv_query_batch`, then fetch full advisory records only where the remediation decision needs more detail. Keep the original row identity when relating an advisory to a dependency. For a single dependency use `osv_query_package`; retain that query when retrieving package-scoped fixes and severity.
 
+The initial batch summary retains ascending zero-based `vulnerableRows`, `errorRows`, and `truncatedRows`, including when the preview omits those rows. Memberships are independent: a vulnerable or errored row can also be truncated. Retrieve a listed index with `/results/<index>`; continuation pages preserve original input indices and do not recompute the scan summary.
+
 ## Workflows
 
 **Retrieve an oversized result.** Repeat the original tool input with the announced `overflow.page`. Continue the same path using the returned next offset and revision until the next offset is null. Retrieve each deferred child separately from offset zero without the parent's revision. Reuse the announced advisory ID for package advisory pages. Do not pass an output page object back as a request. A stale revision requires restarting that node without a revision; pages are fresh lookups, not a historical snapshot.

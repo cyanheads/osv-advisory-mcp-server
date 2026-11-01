@@ -29,10 +29,15 @@ exports[`osvQueryBatch over a real service and stubbed OSV HTTP > keeps structur
   "summary": {
     "cleanCount": 0,
     "errorCount": 0,
+    "errorRows": [],
     "totalPackages": 1,
     "totalVulns": 1,
     "truncatedCount": 0,
+    "truncatedRows": [],
     "vulnerableCount": 1,
+    "vulnerableRows": [
+      0,
+    ],
     "worstSeverity": "MODERATE",
   },
 }

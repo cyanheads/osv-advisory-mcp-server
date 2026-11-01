@@ -12,6 +12,142 @@ import { captureOsvQueries, loadOsvRecord } from '../helpers/osv-fixtures.js';
 afterEach(() => vi.unstubAllGlobals());
 describe('PURL package queries', () => {
   it.each([
+    ['npm', 'npm'],
+    ['crates.io', 'cargo'],
+  ])(
+    'normalizes embedded and separate %s PURL pins through both query tools',
+    async (ecosystem, type) => {
+      const bodies = captureOsvQueries([]);
+      initOsvApiService();
+      const embedded = `pkg:${type}/example@%3D1.2.3`;
+      const versionless = `pkg:${type}/example`;
+      const inputs = [{ purl: embedded }, { purl: versionless, version: '==1.2.3' }];
+      for (const input of inputs) {
+        const reply = await runToolContract(osvQueryPackage, input);
+        expect(reply.structuredContent).toMatchObject({
+          queryMeta: { purl: input.purl, ecosystem, version: '1.2.3' },
+          vulns: [],
+        });
+        expect(JSON.stringify(reply.content)).toContain('1.2.3');
+      }
+      const batch = await runToolContract(osvQueryBatch, { packages: inputs });
+      expect(osvQueryBatch.output.parse(batch.structuredContent).results).toMatchObject([
+        { purl: embedded, version: '1.2.3', error: null },
+        { purl: versionless, version: '1.2.3', error: null },
+      ]);
+      expect(JSON.stringify(batch.content)).toContain('1.2.3');
+      expect(bodies).toEqual([
+        { package: { purl: `pkg:${type}/example@1.2.3` } },
+        { package: { purl: versionless }, version: '1.2.3' },
+        { package: { purl: `pkg:${type}/example@1.2.3` } },
+        { package: { purl: versionless }, version: '1.2.3' },
+      ]);
+    },
+  );
+  it.each([
+    ['NuGet', 'Newtonsoft.Json', 'newtonsoft.json', 'nuget'],
+    ['crates.io', 'crossbeam-utils', 'CROSSBEAM_UTILS', 'cargo'],
+  ])(
+    'preserves registry aliases through tuple, PURL, batch and advisory retrieval for %s',
+    async (ecosystem, name, alias, type) => {
+      const raw = {
+        id: 'OSV-alias',
+        affected: [
+          {
+            package: { name, ecosystem },
+            severity: [{ type: 'Ubuntu', score: 'high' }],
+            ranges: [
+              { type: 'ECOSYSTEM' as const, events: [{ introduced: '0' }, { fixed: '2.0.0' }] },
+            ],
+          },
+        ],
+      };
+      captureOsvQueries([raw]);
+      initOsvApiService();
+      const inputs = [
+        { name: alias, ecosystem, version: '1.0.0' },
+        { purl: `pkg:${type}/${alias}@1.0.0` },
+      ];
+      for (const input of inputs) {
+        const reply = await runToolContract(osvQueryPackage, input);
+        expect(reply.structuredContent).toMatchObject({
+          queryMeta: { package: alias },
+          vulns: [{ fixedVersions: ['2.0.0'], severityLabel: 'HIGH' }],
+        });
+        expect(JSON.stringify(reply.content)).toContain('Fixed in 2.0.0');
+        const page = await runToolContract(osvQueryPackage, {
+          ...input,
+          page: { advisoryId: raw.id, path: '/fixedVersions' },
+        });
+        expect(
+          osvQueryPackage.output
+            .parse(page.structuredContent)
+            .page!.entries!.map((entry) => entry.value),
+        ).toEqual(['2.0.0']);
+        expect(JSON.stringify(page.content)).toContain('2.0.0');
+      }
+      const batch = await runToolContract(osvQueryBatch, { packages: inputs });
+      expect(osvQueryBatch.output.parse(batch.structuredContent).results).toMatchObject([
+        { name: alias, vulns: [{ fixedVersions: ['2.0.0'], severityLabel: 'HIGH' }] },
+        { vulns: [{ fixedVersions: ['2.0.0'], severityLabel: 'HIGH' }] },
+      ]);
+      expect(JSON.stringify(batch.content)).toContain('2.0.0');
+    },
+  );
+
+  it('rejects invalid tuple and encoded PURL versions before fetch with recovery on both surfaces', async () => {
+    initOsvApiService();
+    const fetchMock = vi.fn(() => Promise.resolve(Response.json({})));
+    vi.stubGlobal('fetch', fetchMock);
+    for (const input of [
+      { name: 'lodash', ecosystem: 'npm', version: '^4.17.20' },
+      { purl: 'pkg:npm/lodash@%5E4.17.20' },
+    ]) {
+      const reply = await runToolContract(osvQueryPackage, input);
+      expect(reply.isError).toBe(true);
+      expect(reply.structuredContent).toMatchObject({
+        error: {
+          data: {
+            reason: 'invalid_version',
+            recovery: { hint: expect.stringContaining('lockfile') },
+          },
+        },
+      });
+      expect(JSON.stringify(reply.content)).toContain('lockfile');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('normalizes exact pins on metadata, tuple and PURL wire requests and isolates rejected batch rows', async () => {
+    const bodies = captureOsvQueries([]);
+    initOsvApiService();
+    const purl = 'pkg:npm/lodash@%3D%3D4.17.20';
+    const pinned = await runToolContract(osvQueryPackage, { purl });
+    expect(pinned.structuredContent).toMatchObject({
+      queryMeta: { purl, version: '4.17.20' },
+      vulns: [],
+    });
+    expect(JSON.stringify(pinned.content)).toContain(purl);
+    expect(bodies[0]).toEqual({ package: { purl: 'pkg:npm/lodash@4.17.20' } });
+    const tuple = { name: 'lodash', ecosystem: 'npm', version: '^4.17.20' };
+    const reply = await runToolContract(osvQueryBatch, {
+      packages: [tuple, { ...tuple, version: '=4.17.20' }, { purl }],
+    });
+    expect(osvQueryBatch.output.parse(reply.structuredContent)).toMatchObject({
+      summary: { errorCount: 1, cleanCount: 2 },
+      results: [
+        { ...tuple, error: expect.stringContaining('lockfile') },
+        { name: 'lodash', version: '4.17.20', error: null },
+        { purl, version: '4.17.20', error: null },
+      ],
+    });
+    expect(JSON.stringify(reply.content)).toContain('lockfile');
+    expect(bodies.slice(1)).toEqual([
+      { package: { name: 'lodash', ecosystem: 'npm' }, version: '4.17.20' },
+      { package: { purl: 'pkg:npm/lodash@4.17.20' } },
+    ]);
+  });
+  it.each([
     ['pkg:npm/%40angular/core@1.0.0', '@angular/core', 'npm'],
     ['pkg:maven/org.example/lib@1', 'org.example:lib', 'Maven'],
     ['pkg:gradle/org.example/lib@1', 'org.example:lib', 'Maven'],
@@ -112,7 +248,7 @@ describe('PURL package queries', () => {
   });
 
   it.each([
-    ['pkg:npm/%40scope/example@1', '@scope/example', 'npm'],
+    ['pkg:npm/%40scope/example@1.0.0', '@scope/example', 'npm'],
     ['pkg:deb/debian/example@1?arch=source&distro=bookworm', 'example', 'Debian:12'],
   ])('scopes fixes and severity correctly for %s', async (purl, name, ecosystem) => {
     captureOsvQueries([
@@ -134,7 +270,11 @@ describe('PURL package queries', () => {
     ]);
     initOsvApiService();
     const purlReply = await runToolContract(osvQueryPackage, { purl });
-    const tupleReply = await runToolContract(osvQueryPackage, { name, ecosystem, version: '1' });
+    const tupleReply = await runToolContract(osvQueryPackage, {
+      name,
+      ecosystem,
+      version: ecosystem === 'npm' ? '1.0.0' : '1',
+    });
     const result = osvQueryPackage.output.parse(purlReply.structuredContent);
     expect(result.vulns).toEqual(osvQueryPackage.output.parse(tupleReply.structuredContent).vulns);
     expect(result.vulns![0]).toMatchObject({
@@ -224,7 +364,7 @@ describe('PURL package queries', () => {
   it('keeps clean PURL echoes and empty past-end pages on both surfaces', async () => {
     initOsvApiService();
     captureOsvQueries([]);
-    const original = { purl: 'pkg:npm/example@99' };
+    const original = { purl: 'pkg:npm/example@99.0.0' };
     const reply = await runToolContract(osvQueryPackage, original);
     expect(reply.structuredContent).toMatchObject({
       truncated: false,

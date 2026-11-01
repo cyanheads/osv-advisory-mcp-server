@@ -52,7 +52,12 @@ describe('matchesQueriedPackage', () => {
     ['Zope.Interface', 'zope-interface', 'PyPI', true],
     ['Django', 'django', 'Echo:PyPI', true],
     ['Lodash', 'lodash', 'npm', false],
-    ['newtonsoft.json', 'Newtonsoft.Json', 'NuGet', false],
+    ['newtonsoft.json', 'Newtonsoft.Json', 'NuGet', true],
+    ['CROSSBEAM_UTILS', 'crossbeam-utils', 'crates.io', true],
+    ['crossbeam_utils', 'crossbeam-utils', 'crates.io', true],
+    ['Éxample', 'éxample', 'NuGet', false],
+    ['Éxample', 'éxample', 'crates.io', false],
+    ['Zope.Interface', 'zope-interface', 'Red Hat Lightwell:PyPI', true],
     ['log4j_core', 'log4j-core', 'Maven', false],
   ])('queried name %s vs entry name %s in %s → %s', (queried, entry, ecosystem, expected) => {
     expect(matchesQueriedPackage({ name: entry, ecosystem }, { name: queried, ecosystem })).toBe(

@@ -78,15 +78,15 @@ describe('classifyEcosystems', () => {
 
   it('lists a rejected schema member outside the catalog under withhold only', () => {
     const result = classifyEcosystems({
-      schema: ['npm', 'Red Hat Lightwell'],
+      schema: ['npm', 'Future Ecosystem'],
       catalog: ['npm', 'GIT'],
       accepted: new Map([
         ['npm', true],
-        ['Red Hat Lightwell', false],
+        ['Future Ecosystem', false],
         ['GIT', true],
       ]),
     });
-    expect(result).toEqual({ add: [], withhold: ['Red Hat Lightwell'], remove: [] });
+    expect(result).toEqual({ add: [], withhold: ['Future Ecosystem'], remove: [] });
   });
 
   it('lists a rejected catalog entry and one the schema dropped under remove, with the reason', () => {
@@ -152,11 +152,11 @@ describe('checkEcosystems', () => {
     const result = await checkEcosystems({
       catalog: ['npm', 'GIT'],
       fetch: fakeFetch({
-        schema: ['npm', 'Red Hat Lightwell'],
-        probes: { 'Red Hat Lightwell': 'reject' },
+        schema: ['npm', 'Future Ecosystem'],
+        probes: { 'Future Ecosystem': 'reject' },
       }),
     });
-    expect(checked(result)).toMatchObject({ add: [], withhold: ['Red Hat Lightwell'], remove: [] });
+    expect(checked(result)).toMatchObject({ add: [], withhold: ['Future Ecosystem'], remove: [] });
     expect(exitCodeFor(result)).toBe(0);
   });
 
@@ -234,12 +234,12 @@ describe('renderReport', () => {
     const text = renderReport({
       kind: 'checked',
       add: ['Homebrew'],
-      withhold: ['Red Hat Lightwell'],
+      withhold: ['Future Ecosystem'],
       remove: [{ name: 'Gone', reason: 'not in the schema' }],
       probed: 4,
     });
     expect(text).toMatch(/^add\b.*\(1\):\n {2}- Homebrew$/m);
-    expect(text).toMatch(/^withhold\b.*\(1\):\n {2}- Red Hat Lightwell$/m);
+    expect(text).toMatch(/^withhold\b.*\(1\):\n {2}- Future Ecosystem$/m);
     expect(text).toMatch(/^remove\b.*\(1\):\n {2}- Gone — not in the schema$/m);
     expect(text).toContain('Drift');
   });

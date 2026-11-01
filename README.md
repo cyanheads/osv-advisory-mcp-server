@@ -46,6 +46,7 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 ### `osv_query_package` <sub>tool</sub>
 
 - Provide `name`, `ecosystem` (case-sensitive exact match), and `version`, or a `purl` such as `pkg:pypi/jinja2@3.1.4`. A PURL needs exactly one version: embedded in the URL or supplied separately. Versions are exact, never ranges
+- Unsupported ecosystem-specific constraints fail as `invalid_version`; npm/crates.io exact pins with `=` or `==` normalize to the installed version
 - Each advisory carries CVE `aliases`, `severityLabel` with its `severitySource`, the queried package's `fixedVersions`, `affectedRanges`, and `cweIds`
 - `truncated: true` means OSV had more pages than `OSV_QUERY_MAX_PAGES` follows, so an empty `vulns` list is not a clean result; an unrecognized ecosystem fails as `invalid_ecosystem`
 
@@ -56,6 +57,7 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 - 1–1000 `{name, ecosystem, version}` tuples or `{purl, version?}` entries per call; mix either form, and `results[i]` matches `packages[i]`
 - Each row carries `vulnerable`, `vulnCount`, `vulns`, `truncated`, and `error`; a failure lands in the affected rows' `error` instead of failing the call
 - `summary` totals the scan (`vulnerableCount`, `cleanCount`, `truncatedCount`, `errorCount`, `totalVulns`, `worstSeverity`), and truncated rows never count as clean. The whole scan has a 50-second deadline
+- `vulnerableRows`, `errorRows`, and `truncatedRows` in `summary` retain original zero-based indices even when the preview omits those rows. Lists can overlap; retrieve a row with `/results/<index>`
 
 ---
 
@@ -95,7 +97,7 @@ Agent-friendly output:
 - Truncation is never read as clean — `truncated` flags incomplete OSV pagination, and truncated batch rows are left out of `cleanCount`
 - `aliases` (CVE IDs) on every advisory chain to `nist-nvd-mcp-server` for CVSS base scores and CISA KEV status
 - Responses are capped at 24,000 bytes. Start retrieval by repeating the original input with `page: overflow.page`. Continue the same `path` with `offset: page.nextOffset` and `revision: page.revision` until `nextOffset` is null. Fetch each `entries[].deferred.path` separately at offset zero without a revision; never copy the whole output `page` object into the input
-- Advisory text in `content[]` is escaped so it can't render as live HTML or links; `structuredContent` keeps every OSV string verbatim
+- Advisory text in `content[]` escapes HTML and unsafe-link constructs while preserving HTTP(S) links; caller coordinates render literally. `structuredContent` keeps every OSV string verbatim
 
 ## Getting started
 

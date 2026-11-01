@@ -5,7 +5,12 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { escapeAdvisoryInline } from '@/mcp-server/tools/render-escape.js';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
+import {
+  callerCode,
+  escapeAdvisoryInline,
+  renderCallerNotice,
+} from '@/mcp-server/tools/render-escape.js';
 import type { OsvPackageVulnerability } from '@/services/osv-api/osv-api-service.js';
 import { getOsvApiService } from '@/services/osv-api/osv-api-service.js';
 import { resolvePackage } from '@/services/osv-api/package-identifier.js';
@@ -188,14 +193,16 @@ const PackageOutput = PackageFullOutput.partial().extend(RetrievalOutput.shape);
 function renderPackage(
   result: z.infer<typeof PackageOutput>,
 ): Array<{ type: 'text'; text: string }> {
-  const retrieval = renderRetrieval(result);
+  const retrieval = renderRetrieval(result, (path) =>
+    /^(?:\/queryMeta\/(?:package|ecosystem|version|purl)|\/(?:notice|effectiveQuery))$/.test(path),
+  );
   if (result.vulns === undefined || result.queryMeta === undefined) return retrieval;
   const lines: string[] = [];
   const { queryMeta } = result;
   lines.push(
-    `**Package:** \`${queryMeta.package}\` @ \`${queryMeta.version}\` (${queryMeta.ecosystem}) — ${queryMeta.vulnCount} vuln(s)\n`,
+    `**Package:** ${callerCode(queryMeta.package)} @ ${callerCode(queryMeta.version)} (${escapeMarkdownInline(queryMeta.ecosystem)}) — ${queryMeta.vulnCount} vuln(s)\n`,
   );
-  if (queryMeta.purl !== undefined) lines.push(`**PURL:** ${escapeAdvisoryInline(queryMeta.purl)}`);
+  if (queryMeta.purl !== undefined) lines.push(`**PURL:** ${escapeMarkdownInline(queryMeta.purl)}`);
 
   if (result.vulns.length === 0) {
     lines.push(
@@ -340,6 +347,14 @@ export const osvQueryPackage = tool('osv_query_package', {
   },
 
   errors: [
+    {
+      reason: 'invalid_version',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The version is a constraint or is not a valid exact version for its ecosystem.',
+      recovery:
+        'Pass the exact resolved version from the lockfile, such as 4.17.20, not a range or constraint.',
+      thrownBy: 'service',
+    },
     {
       reason: 'invalid_purl',
       code: JsonRpcErrorCode.ValidationError,
@@ -488,10 +503,11 @@ export const osvQueryPackage = tool('osv_query_package', {
   },
 
   format: renderPackage,
+  enrichmentTrailer: { notice: { render: renderCallerNotice } },
 });
 
 const measurePackage: (
   value: Retrieval & Record<string, unknown>,
   enrichment?: { notice?: string; effectiveQuery?: string },
 ) => number = (value, enrichment) =>
-  wireMeasure((v) => renderPackage(PackageOutput.parse(v)), enrichment)(value);
+  wireMeasure((v) => renderPackage(PackageOutput.parse(v)), enrichment, renderCallerNotice)(value);

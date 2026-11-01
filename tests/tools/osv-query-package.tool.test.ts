@@ -91,6 +91,128 @@ describe('osvQueryPackage', () => {
     mockService.queryPackage.mockReset();
   });
 
+  it.each(['lodash', 'npm', 'Rocky Linux', 'Debian:12', 'python_multipart'])(
+    'characterizes ordinary coordinate rendering for %s',
+    async (name) => {
+      mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [], truncated: false });
+      const reply = await runToolContract(osvQueryPackage, {
+        name,
+        ecosystem: 'npm',
+        version: '1.0.0',
+      });
+      expect(contentText(reply)).toContain(
+        `**Package:** \`${name}\` @ \`1.0.0\` (npm) — 0 vuln(s)\n`,
+      );
+      expect(contentText(reply)).toContain(`> No known vulnerabilities for ${name}@1.0.0 (npm).`);
+    },
+  );
+
+  it.each([
+    '<i>x</i> [next](https://example.test)',
+    'a`<i>x</i> [next](https://example.test)`b',
+    'one\n<i>two</i>\n',
+  ])('renders caller coordinate %j literally without altering structured data', async (name) => {
+    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [], truncated: false });
+    const reply = await runToolContract(osvQueryPackage, {
+      name,
+      ecosystem: 'npm',
+      version: '1.0.0',
+    });
+    const effectiveName = name.trim();
+    expect(reply.structuredContent).toMatchObject({
+      queryMeta: { package: effectiveName },
+      notice: `No known vulnerabilities for ${effectiveName}@1.0.0 (npm).`,
+    });
+    const parsed = scanMarkdown(contentText(reply));
+    expect(parsed.html).toEqual([]);
+    expect(parsed.links).toEqual([]);
+    expect(parsed.literalText).toContain(effectiveName);
+  });
+
+  it('renders caller coordinates literally in metadata pages while keeping advisory links', async () => {
+    const name = '<b>x</b> [next](https://example.test)';
+    mockService.queryPackage.mockResolvedValue({
+      invalid: false,
+      vulns: [{ ...SAMPLE_VULN, summary: '[advisory](https://advisory.test)' }],
+      truncated: false,
+    });
+    for (const path of ['', '/queryMeta', '/queryMeta/package']) {
+      const reply = await runToolContract(osvQueryPackage, {
+        name,
+        ecosystem: 'npm',
+        version: '1.0.0',
+        page: { path },
+      });
+      expect(reply.isError).not.toBe(true);
+      const parsed = scanMarkdown(contentText(reply));
+      expect(parsed.links).not.toContain('https://example.test');
+      expect(parsed.literalText).toContain(name);
+      if (path === '') expect(parsed.links).toContain('https://advisory.test');
+    }
+  });
+
+  it.each([1000, 2000, 4000])(
+    'bounds escaped caller markup at %i characters against actual assembled bytes',
+    async (length) => {
+      const name = '[x](https://example.test)'.repeat(Math.ceil(length / 24)).slice(0, length);
+      mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [], truncated: false });
+      const reply = await runToolContract(osvQueryPackage, {
+        name,
+        ecosystem: 'npm',
+        version: '1.0.0',
+      });
+      expect(reply.isError).not.toBe(true);
+      expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(24000);
+      expect(scanMarkdown(contentText(reply)).links).toEqual([]);
+    },
+  );
+
+  it('announces complete source metadata retained in an advisory preview', async () => {
+    mockService.queryPackage.mockResolvedValue({
+      invalid: false,
+      vulns: [{ ...SAMPLE_VULN, summary: 'x'.repeat(16000) }],
+      truncated: false,
+    });
+    const reply = await runToolContract(osvQueryPackage, {
+      name: 'lodash',
+      ecosystem: 'npm',
+      version: '1.0.0',
+    });
+    const output = osvQueryPackage.output.parse(reply.structuredContent);
+    expect(output.overflow!.complete).toEqual(['truncated', 'queryMeta']);
+    expect(output.overflow!.omitted).toEqual([{ path: '/vulns', type: 'array', total: 1 }]);
+    expect(output.preview!.queryMeta).toMatchObject({ package: 'lodash' });
+  });
+
+  it('keeps original PURLs and renders derived caller names literally', async () => {
+    const name = 'a`<b>x</b> [next](https://example.test)`b';
+    const purl = `pkg:npm/${encodeURIComponent(name)}@1.0.0`;
+    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [], truncated: false });
+    const reply = await runToolContract(osvQueryPackage, { purl });
+    expect(reply.isError).not.toBe(true);
+    expect(reply.structuredContent).toMatchObject({ queryMeta: { package: name, purl } });
+    const parsed = scanMarkdown(contentText(reply));
+    expect(parsed.links).toEqual([]);
+    expect(parsed.html).toEqual([]);
+    expect(parsed.literalText).toContain(name);
+    expect(parsed.literalText).toContain(purl);
+  });
+
+  it('keeps caller-bearing enrichment literal when selected through retrieval', async () => {
+    const name = '<i>x</i> [next](https://example.test)';
+    mockService.queryPackage.mockResolvedValue({ invalid: false, vulns: [], truncated: false });
+    for (const path of ['', '/notice', '/effectiveQuery']) {
+      const reply = await runToolContract(osvQueryPackage, {
+        name,
+        ecosystem: 'npm',
+        version: '1.0.0',
+        page: { path },
+      });
+      expect(reply.isError).not.toBe(true);
+      expect(scanMarkdown(contentText(reply)).links).toEqual([]);
+    }
+  });
+
   it('returns vulnerabilities for a known vulnerable package', async () => {
     mockService.queryPackage.mockResolvedValue({
       invalid: false,
@@ -566,7 +688,7 @@ describe('osvQueryPackage over a real service and stubbed OSV HTTP', () => {
     const input = {
       name: 'wanted',
       ecosystem: 'npm',
-      version: '1',
+      version: '1.0.0',
       page: { advisoryId: raw.id!, path: '' },
     };
     const reply = await runToolContract(osvQueryPackage, input);
@@ -587,7 +709,7 @@ describe('osvQueryPackage over a real service and stubbed OSV HTTP', () => {
   it('bounds oversized query metadata and enrichment and retrieves every omitted echo', async () => {
     stubOsvApi({ query: () => [] });
     const name = '🧬'.repeat(12000);
-    const input = { name, ecosystem: 'npm', version: '1' };
+    const input = { name, ecosystem: 'npm', version: '1.0.0' };
     const reply = await runToolContract(osvQueryPackage, input);
     expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(24000);
     const overflow = osvQueryPackage.output.parse(reply.structuredContent).overflow!;
