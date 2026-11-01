@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.1](changelog/0.4.x/0.4.1.md) — 2026-10-31
+
+Preserve package query correctness and identify batch findings across oversized results.
+
 ## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-10-30
 
 Publish the OSV advisory guide and align response budgets with mcp-ts-core 0.13.18.
