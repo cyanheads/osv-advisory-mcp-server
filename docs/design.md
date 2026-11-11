@@ -276,9 +276,9 @@ Events:
 
 ### `osv_query_package`
 
-**Description:** Query known vulnerabilities for a single package version across any supported ecosystem. Returns all matching OSV advisories with severity (CVSS vectors), CVE aliases, affected version ranges, and the fixed versions listed for the queried package. Use `osv_list_ecosystems` to validate the ecosystem string before querying — ecosystem strings are case-sensitive exact matches and an invalid value returns an error, not empty results.
+**Description:** Query known vulnerabilities for a single package version across any supported ecosystem. Returns matching OSV advisories with severity (CVSS vectors), CVE aliases, affected version ranges, and the fixed versions listed for the queried package. Use `osv_list_ecosystems` to find case-sensitive ecosystem identifiers.
 
-**Input:** `{name, ecosystem, version}` or `{purl, version?}`, plus optional retrieval `page`. The root schema advertises optional fields and validates their exclusivity. A PURL cannot be combined with `name` or `ecosystem`, and requires exactly one embedded or separate version.
+**Input:** `{name, ecosystem, version}` or `{purl, version?}`, with optional `cursor` for upstream continuation and `page` for field retrieval. The root schema advertises optional fields and validates their exclusivity. A PURL requires exactly one embedded or separate version and excludes `name` and `ecosystem`.
 
 Tuple fields and separate versions use `z.string().trim().regex(/\S/, '… must not be blank …')`; batch rows use the same chain. PURLs are trimmed and parsed by `packageurl-js`.
 
@@ -288,6 +288,9 @@ Tuple fields and separate versions use `z.string().trim().regex(/\S/, '… must 
 **Output:**
 ```ts
 z.object({
+  truncated: z.boolean(),
+  nextCursor: z.string().optional(),
+  continuationExhausted: z.literal(true).optional(),
   vulns: z.array(z.object({
     id: z.string().describe('OSV vulnerability ID (e.g. "GHSA-29mw-wpgm-hmr9", "PYSEC-2024-1"). Use with osv_get_vulnerability for full details.'),
     summary: z.string().describe('One-line vulnerability description.'),
@@ -314,7 +317,7 @@ z.object({
     cweIds: z.array(z.string()).describe('CWE weakness IDs (e.g. ["CWE-79", "CWE-94"]). From database_specific.cwe_ids on GHSA records; empty otherwise.'),
     published: z.string().describe('ISO 8601 timestamp when the advisory was published.'),
     modified: z.string().describe('ISO 8601 timestamp of last modification.'),
-  })).describe('Vulnerabilities matching this package version. Empty array means no known vulnerabilities.'),
+  })).describe('Vulnerabilities matching this package version. Only an empty, complete initial result confirms no known vulnerabilities.'),
   queryMeta: z.object({
     package: z.string().describe('Queried package name.'),
     ecosystem: z.string().describe('Queried ecosystem.'),
@@ -324,7 +327,7 @@ z.object({
 })
 ```
 
-**Errors:**
+**Errors:** A malformed, mismatched, or upstream-rejected continuation fails as `invalid_cursor`.
 ```ts
 errors: [
   {
@@ -344,7 +347,7 @@ errors: [
 
 **Description:** Query vulnerabilities for a prefix of up to 1,000 packages per call. Each result corresponds positionally to the input. Findings include CVE `aliases` for lookup with `nist-nvd-mcp-server`.
 
-**Input:** `packages` contains 1–5,000 identifiers using tuple or PURL input shapes. The optional `page` selects bounded retrieval. `results[i]` corresponds to `packages[i]` in the processed prefix.
+**Input:** `packages` contains 1–5,000 identifiers using tuple or PURL input shapes. `OSV_BATCH_SERVE_OVER_CAP=false` lowers the submission ceiling to 1,000. The optional `page` selects bounded retrieval. `results[i]` corresponds to `packages[i]` in the processed prefix.
 
 **Output:**
 ```ts
@@ -354,6 +357,8 @@ z.object({
     ecosystem: z.string().describe('Ecosystem from input.'),
     version: z.string().describe('Version from input.'),
     vulnerable: z.boolean().describe('True if any vulnerabilities were found.'),
+    truncated: z.boolean().describe('Upstream matching is incomplete.'),
+    nextCursor: z.string().optional().describe('Continue the row with osv_query_package.'),
     error: z.string().nullable().describe('Per-package error message (e.g. invalid ecosystem). Null on success.'),
     vulnCount: z.number().describe('Number of vulnerabilities found. 0 when not vulnerable or on error.'),
     vulns: z.array(z.object({
@@ -366,15 +371,20 @@ z.object({
   })).describe('Per-package results, positionally matching the input array.'),
   summary: z.object({
     totalPackages: z.number().describe('Total packages queried.'),
+    submittedPackages: z.number(),
+    unprocessedCount: z.number(),
+    nextInputOffset: z.number().nullable(),
+    inputRemainder: z.string().optional(),
     vulnerableCount: z.number().describe('Packages with at least one vulnerability.'),
-    cleanCount: z.number().describe('Packages with no vulnerabilities.'),
+    cleanCount: z.number().describe('Complete packages with no vulnerabilities or errors.'),
+    truncatedCount: z.number(),
     errorCount: z.number().describe('Packages that returned an error (e.g. invalid ecosystem).'),
     vulnerableRows: z.array(z.number()).describe('Ascending zero-based input indices of vulnerable rows.'),
     errorRows: z.array(z.number()).describe('Ascending zero-based input indices of errored rows.'),
     truncatedRows: z.array(z.number()).describe('Ascending zero-based input indices of upstream-truncated rows; overlaps findings and errors.'),
     totalVulns: z.number().describe('Total vulnerability instances across all packages (may double-count shared advisories).'),
     worstSeverity: z.string().nullable().describe('Highest severity label seen across all findings, or null if no severity data available.'),
-  }).describe('Aggregate statistics across the full batch.'),
+  }).describe('Submission counts and outcomes for the processed prefix.'),
 })
 ```
 
@@ -388,11 +398,11 @@ Ecosystems are not checked against a local allowlist: OSV.dev is the authority. 
 
 ### `osv_query_commit`
 
-**Input:** A full `commit` hash: 40 hexadecimal characters for SHA-1 or 64 for SHA-256, with either letter case accepted. Abbreviated hashes fail schema validation. Optional `page` uses the same bounded retrieval contract as package queries.
+**Input:** A full `commit` hash, either 40 hexadecimal characters for SHA-1 or 64 for SHA-256. Either letter case is accepted. Optional `cursor` resumes upstream matching and optional `page` retrieves fields as in package queries.
 
-**Output:** `vulns`, upstream `truncated`, and `queryMeta: {commit, vulnCount}`. Advisory summaries use the package advisory fields except `fixedVersions`, which has no package scope here. Severity is record-wide, and `affectedRanges` preserves repository URLs, ordered events, and package-less GIT entries. Oversized results return the shared preview/overflow/page arms.
+**Output:** `vulns`, upstream `truncated`, and `queryMeta: {commit, vulnCount}`. Incomplete results carry `nextCursor`. An empty terminal resume carries `continuationExhausted: true`. Advisory summaries omit `fixedVersions`. Severity is record-wide, and `affectedRanges` preserves repository URLs, ordered events, and package-less GIT entries. Oversized results return the shared overflow and page fields.
 
-**Errors:** `invalid_commit_query` for an upstream validation rejection, `invalid_page_path` for an invalid retrieval pointer, and `stale_page_revision` when the selected node changed. Other upstream and cancellation failures retain the service's standard error handling.
+**Errors:** `invalid_cursor` for a malformed, mismatched, or upstream-rejected continuation, `invalid_commit_query` for other upstream validation rejections, `invalid_page_path` for an invalid retrieval pointer, and `stale_page_revision` when the selected node changed.
 
 ---
 
