@@ -61,6 +61,72 @@ describe('batch characterization', () => {
 });
 
 describe('native batch', () => {
+  it('reports a row error when the first page cannot hydrate before the deadline', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (new URL(url).pathname === '/v1/querybatch') {
+        return Promise.resolve(
+          Response.json({
+            results: [{ vulns: [{ id: 'blocked' }], next_page_token: 'unusable' }],
+          }),
+        );
+      }
+      return new Promise<Response>((_resolve, reject) =>
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true }),
+      );
+    });
+    vi.stubGlobal('fetch', fetch);
+    const pending = new OsvApiService({ timeoutMs: 60_000 }).queryBatch(
+      packages.slice(0, 1),
+      createMockContext(),
+    );
+    await vi.advanceTimersByTimeAsync(50_000);
+    const [row] = await pending;
+    expect(row).toMatchObject({
+      error: expect.stringContaining('50-second deadline'),
+      truncated: true,
+      vulns: [],
+    });
+    expect(row).not.toHaveProperty('nextCursor');
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains the previous hydrated checkpoint when a later page cannot hydrate', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn((url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === '/v1/querybatch') {
+        const token = JSON.parse(String(init?.body)).queries[0].page_token;
+        return Promise.resolve(
+          Response.json({
+            results: [
+              {
+                vulns: [{ id: token ? 'blocked' : 'shared' }],
+                next_page_token: token ? 'second' : 'first',
+              },
+            ],
+          }),
+        );
+      }
+      if (path.endsWith('/shared')) return Promise.resolve(Response.json(record));
+      return new Promise<Response>((_resolve, reject) =>
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true }),
+      );
+    });
+    vi.stubGlobal('fetch', fetch);
+    const service = new OsvApiService({ timeoutMs: 60_000, maxQueryPages: 2 });
+    const pending = service.queryBatch(packages.slice(0, 1), createMockContext());
+    await vi.advanceTimersByTimeAsync(50_000);
+    const [row] = await pending;
+    expect(row).toMatchObject({
+      error: null,
+      truncated: true,
+      nextCursor: expect.any(String),
+      vulns: [{ id: 'shared' }],
+    });
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
   it('marks queued fallback rows failed when the operation deadline expires', async () => {
     vi.useFakeTimers();
     const fetch = vi.fn((url: string, init?: RequestInit) => {

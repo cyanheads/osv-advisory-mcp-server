@@ -4,6 +4,7 @@
     "args": ["-y", "@cyanheads/osv-advisory-mcp-server"],
     "env": {
       "MCP_TRANSPORT_TYPE": "stdio"
-    }
+    },
+    "env_vars": ["OSV_BATCH_SERVE_OVER_CAP"]
   }
 }

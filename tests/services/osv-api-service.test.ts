@@ -191,7 +191,7 @@ describe('OsvApiService', () => {
           createMockContext({ signal: controller.signal }),
         ),
       ).rejects.toThrow();
-      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch).not.toHaveBeenCalled();
     });
   });
 

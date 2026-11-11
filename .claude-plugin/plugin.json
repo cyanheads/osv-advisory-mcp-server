@@ -12,12 +12,21 @@
   "repository": "https://github.com/cyanheads/osv-advisory-mcp-server",
   "license": "Apache-2.0",
   "keywords": ["mcp", "mcp-server", "model-context-protocol", "osv", "vulnerability", "security", "sbom"],
+  "userConfig": {
+    "OSV_BATCH_SERVE_OVER_CAP": {
+      "type": "boolean",
+      "title": "Accept large batch submissions",
+      "description": "Accept up to 5000 packages and process the first 1000. False rejects submissions over 1000.",
+      "default": true
+    }
+  },
   "mcpServers": {
     "osv-advisory-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/osv-advisory-mcp-server"],
       "env": {
-        "MCP_TRANSPORT_TYPE": "stdio"
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "OSV_BATCH_SERVE_OVER_CAP": "${user_config.OSV_BATCH_SERVE_OVER_CAP}"
       }
     }
   }

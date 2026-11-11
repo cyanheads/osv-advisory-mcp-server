@@ -6,13 +6,16 @@
 import { z } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { osvQueryBatch } from '@/mcp-server/tools/definitions/osv-query-batch.tool.js';
+import {
+  createOsvQueryBatch,
+  osvQueryBatch,
+} from '@/mcp-server/tools/definitions/osv-query-batch.tool.js';
 
 /** Assert the full branch before retaining legacy semantic assertions. */
 async function fullHandler(...args: Parameters<typeof osvQueryBatch.handler>) {
   return osvQueryBatch.output
     .omit({ preview: true, overflow: true, page: true })
-    .required()
+    .required({ results: true, summary: true })
     .parse(await osvQueryBatch.handler(...args));
 }
 
@@ -545,13 +548,13 @@ describe('osvQueryBatch', () => {
     expect(() => osvQueryBatch.input.parse({ packages: [] })).toThrow();
   });
 
-  it('rejects packages array over 1000 at schema parse', () => {
+  it('rejects packages array over 1000 with prefix processing disabled', () => {
     const pkgs = Array.from({ length: 1001 }, (_, i) => ({
       name: `pkg${i}`,
       ecosystem: 'npm',
       version: '1.0.0',
     }));
-    expect(() => osvQueryBatch.input.parse({ packages: pkgs })).toThrow();
+    expect(() => createOsvQueryBatch(false).input.parse({ packages: pkgs })).toThrow();
   });
 
   it('formats batch output with vulnerable packages section', () => {
@@ -588,6 +591,9 @@ describe('osvQueryBatch', () => {
       ],
       summary: {
         totalPackages: 2,
+        submittedPackages: 2,
+        unprocessedCount: 0,
+        nextInputOffset: null,
         vulnerableCount: 1,
         cleanCount: 1,
         truncatedCount: 0,
@@ -626,6 +632,9 @@ describe('osvQueryBatch', () => {
       ],
       summary: {
         totalPackages: 1,
+        submittedPackages: 1,
+        unprocessedCount: 0,
+        nextInputOffset: null,
         vulnerableCount: 0,
         cleanCount: 1,
         truncatedCount: 0,
@@ -662,6 +671,9 @@ describe('osvQueryBatch', () => {
       ],
       summary: {
         totalPackages: 1,
+        submittedPackages: 1,
+        unprocessedCount: 0,
+        nextInputOffset: null,
         vulnerableCount: 0,
         cleanCount: 0,
         truncatedCount: 0,
@@ -786,6 +798,9 @@ describe('osvQueryBatch', () => {
       ],
       summary: {
         totalPackages: 1,
+        submittedPackages: 1,
+        unprocessedCount: 0,
+        nextInputOffset: null,
         vulnerableCount: 0,
         cleanCount: 0,
         truncatedCount: 1,
@@ -960,6 +975,9 @@ describe('osvQueryBatch over a real service and stubbed OSV HTTP', () => {
         ],
         summary: {
           totalPackages: 2,
+          submittedPackages: 2,
+          unprocessedCount: 0,
+          nextInputOffset: null,
           vulnerableCount: 1,
           cleanCount: 0,
           truncatedCount: 0,

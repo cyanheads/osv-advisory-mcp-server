@@ -311,6 +311,10 @@ export function pageValue(
     notice: 'Re-fetched now; this is not a saved historical snapshot.',
   };
   const result = { ...retained, page };
+  // The atomic continuation travels separately from the bounded field page.
+  const { nextCursor: _cursor, ...ordinary } = retained;
+  const measured = { ...ordinary, page };
+  const fits = () => measure(measured) <= RESPONSE_BYTES;
   if (shape.type === 'string') {
     const points = Array.from(String(value));
     let low = 0;
@@ -319,7 +323,7 @@ export function pageValue(
       const count = Math.ceil((low + high) / 2);
       page.text = points.slice(request.offset, request.offset + count).join('');
       page.nextOffset = request.offset + count < shape.total ? request.offset + count : null;
-      if (measure(result) <= RESPONSE_BYTES) low = count;
+      if (fits()) low = count;
       else high = count - 1;
     }
     page.text = points.slice(request.offset, request.offset + low).join('');
@@ -349,7 +353,7 @@ export function pageValue(
   while (low < high) {
     const count = Math.ceil((low + high) / 2);
     select(count);
-    if (measure(result) <= RESPONSE_BYTES) low = count;
+    if (fits()) low = count;
     else high = count - 1;
   }
   select(low);
@@ -358,13 +362,13 @@ export function pageValue(
     const [key, value] = nextChild;
     const selected = page.entries;
     page.entries = [{ key, value }];
-    const oversized = measure(result) > RESPONSE_BYTES;
+    const oversized = !fits();
     page.entries = selected;
     if (oversized && page.entries) {
       page.entries.push({ key, deferred: descriptor(childPointer(request.path, key), value) });
       const previousOffset = page.nextOffset;
       page.nextOffset = request.offset + low + 1 < entries.length ? request.offset + low + 1 : null;
-      if (measure(result) > RESPONSE_BYTES) {
+      if (!fits()) {
         page.entries.pop();
         page.nextOffset = previousOffset;
       }
@@ -384,7 +388,7 @@ export function pageValue(
       },
     ];
     page.nextOffset = request.offset + 1 < entries.length ? request.offset + 1 : null;
-    if (measure(result) > RESPONSE_BYTES)
+    if (!fits())
       throw validationError(
         'The child path is too long to retrieve. Select a shorter parent path.',
         { reason: 'invalid_page_path' },

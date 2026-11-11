@@ -10,9 +10,10 @@ import {
   serviceUnavailable,
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
-import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
+import { createCounter, escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { callerCode, escapeAdvisoryInline } from '@/mcp-server/tools/render-escape.js';
 import { getOsvApiService } from '@/services/osv-api/osv-api-service.js';
+import { cursorBlock, NextCursor } from '../continuation-fields.js';
 import { PackagePurlInput, PackageTupleInput } from '../package-input.js';
 import {
   boundResponse,
@@ -67,6 +68,16 @@ const PackageInputSchema = z.union([
   PackagePurlInput.describe('PURL alternative with exactly one version source.'),
 ]);
 
+const BATCH_PROCESS_LIMIT = 1000;
+const BATCH_SUBMISSION_LIMIT = 5000;
+const overCapBatches = createCounter(
+  'osv.batch.over_cap',
+  'Batch scans that processed only the supported prefix.',
+);
+const RowNextCursor = NextCursor.describe(
+  'Resume this row through osv_query_package with its original identifier and this value as cursor.',
+);
+
 const BatchVulnSchema = z.object({
   id: z.string().describe('OSV vulnerability ID.'),
   summary: z.string().describe('One-line advisory description.'),
@@ -99,10 +110,11 @@ const PerPackageResultSchema = z.object({
       'Original PURL when supplied; name, ecosystem and version show its effective coordinate on success.',
     ),
   vulnerable: z.boolean().describe('True if any vulnerabilities were found.'),
+  nextCursor: RowNextCursor,
   truncated: z
     .boolean()
     .describe(
-      'True when OSV paginated beyond the fetch cap for this package — its result may be INCOMPLETE. A truncated row with no vulnerabilities is NOT confirmed clean.',
+      'True when upstream matching did not finish within the page cap or deadline. A truncated row with no vulnerabilities is not confirmed clean.',
     ),
   error: z
     .string()
@@ -123,6 +135,18 @@ const BatchFullOutput = z.object({
   summary: z
     .object({
       totalPackages: z.number().describe('Total packages queried.'),
+      submittedPackages: z.number().describe('Number of packages in the original submission.'),
+      unprocessedCount: z.number().describe('Submitted packages outside the processed prefix.'),
+      nextInputOffset: z
+        .number()
+        .nullable()
+        .describe(
+          'Zero-based start of the unprocessed input, or null when all input was processed.',
+        ),
+      inputRemainder: z
+        .string()
+        .optional()
+        .describe('Instructions to submit the unprocessed input separately.'),
       vulnerableCount: z.number().describe('Packages with at least one vulnerability.'),
       cleanCount: z
         .number()
@@ -158,12 +182,16 @@ const BatchFullOutput = z.object({
     })
     .describe('Aggregate statistics across the full batch.'),
 });
-const BatchOutput = BatchFullOutput.partial().extend(RetrievalOutput.shape);
+const BatchOutput = BatchFullOutput.partial().extend({
+  ...RetrievalOutput.shape,
+  nextCursor: RowNextCursor,
+});
 
 function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text'; text: string }> {
   const retrieval = renderRetrieval(result, (path) =>
     /^\/results\/\d+\/(name|ecosystem|version|purl)$/.test(path),
   );
+  if (result.nextCursor !== undefined) retrieval.unshift(cursorBlock(result.nextCursor));
   if (result.results === undefined) {
     if (result.summary)
       retrieval.unshift({
@@ -186,12 +214,16 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
   lines.push(`| Metric | Value |`);
   lines.push(`|:-------|:------|`);
   lines.push(`| Total packages | ${summary.totalPackages} |`);
+  lines.push(`| Submitted packages | ${summary.submittedPackages} |`);
+  lines.push(`| Unprocessed packages | ${summary.unprocessedCount} |`);
+  lines.push(`| Next input offset | ${summary.nextInputOffset} |`);
   lines.push(`| Vulnerable | ${summary.vulnerableCount} |`);
   lines.push(`| Clean | ${summary.cleanCount} |`);
   lines.push(`| Truncated | ${summary.truncatedCount} |`);
   lines.push(`| Errors | ${summary.errorCount} |`);
   lines.push(`| Total vulns | ${summary.totalVulns} |`);
   lines.push(`| Worst severity | ${summary.worstSeverity ?? 'N/A'} |`);
+  if (summary.inputRemainder !== undefined) lines.push('', summary.inputRemainder, '');
   for (const key of ['vulnerableRows', 'errorRows', 'truncatedRows'] as const)
     lines.push(`${key}: ${JSON.stringify(summary[key])}`);
 
@@ -227,7 +259,7 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
   if (incomplete.length > 0) {
     lines.push('\n## Incomplete (truncated) Packages\n');
     lines.push(
-      'No vulnerabilities were retrieved within the page-fetch cap, but OSV had more pages — NOT confirmed clean.\n',
+      'No vulnerabilities were retrieved before matching paused. More OSV pages remain — NOT confirmed clean.\n',
     );
     for (const pkg of incomplete) {
       lines.push(
@@ -257,202 +289,242 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
       );
     }
   }
+  result.results.forEach((row, index) => {
+    if (row.nextCursor !== undefined)
+      lines.push(`Row ${index} → osv_query_package: ${cursorBlock(row.nextCursor).text}`);
+  });
 
   return [{ type: 'text', text: lines.join('\n') }, ...retrieval];
 }
 
-export const osvQueryBatch = tool('osv_query_batch', {
-  description:
-    'Query vulnerabilities for multiple packages in one call — the primary tool for dependency audits, ' +
-    'SBOM scanning, and lockfile triage. Pass up to 1000 mixed {name, ecosystem, version} tuples and {purl, version?} identifiers, with exactly one embedded or separate version per PURL. ' +
-    'Each entry in the response corresponds positionally to the input. ' +
-    'Each finding includes CVE aliases for chaining to nist-nvd-mcp-server for CVSS scoring. Large replies retain the complete summary. For overflow, repeat the original packages array with page: overflow.page. Continue the same path with offset: page.nextOffset and revision: page.revision until nextOffset is null. Retrieve each entries[].deferred.path separately at offset zero without a revision. Do not pass the output page object as input. /results/17 selects original input row 17, even when earlier rows failed. Pages are fresh lookups and do not recompute the initial summary; restart a changed node without a revision. Transmission overflow and upstream truncated are separate; neither confirms clean.',
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+/** Build the batch tool with the operator-configured advertised input maximum. */
+export function createOsvQueryBatch(serveOverCap: boolean) {
+  const maxSubmitted = serveOverCap ? BATCH_SUBMISSION_LIMIT : BATCH_PROCESS_LIMIT;
+  return tool('osv_query_batch', {
+    description:
+      'Query vulnerabilities for multiple packages in one call — the primary tool for dependency audits, ' +
+      `SBOM scanning, and lockfile triage. Submit up to ${maxSubmitted} mixed {name, ecosystem, version} tuples and {purl, version?} identifiers, with exactly one embedded or separate version per PURL. The first ${BATCH_PROCESS_LIMIT} entries are processed. Follow summary.nextInputOffset to submit the remaining slice. Pass a row's nextCursor as cursor to osv_query_package with that row's identifier. ` +
+      'Each entry in the response corresponds positionally to the input. ' +
+      'Each finding includes CVE aliases for chaining to nist-nvd-mcp-server for CVSS scoring. Large replies retain the complete summary. For overflow, repeat the original packages array with page: overflow.page. Continue the same path with offset: page.nextOffset and revision: page.revision until nextOffset is null. Retrieve each entries[].deferred.path separately at offset zero without a revision. Do not pass the output page object as input. /results/17 selects original input row 17, even when earlier rows failed. Pages are fresh lookups and do not recompute the initial summary; restart a changed node without a revision. Transmission overflow and upstream truncated are separate; neither confirms clean.',
+    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
 
-  input: z.object({
-    page: PageInput.optional().describe(
-      'Repeat the original packages array with page: overflow.page first. Continue using path, offset: page.nextOffset and revision: page.revision. /results/17/... keeps original row index 17; start deferred children without a revision.',
-    ),
-    packages: z
-      .array(PackageInputSchema.describe('One package to audit.'))
-      .min(1)
-      .max(1000)
-      .describe(
-        'Packages to audit. One entry per dependency. Positional: result[i] corresponds to packages[i].',
+    input: z.object({
+      page: PageInput.optional().describe(
+        'Repeat the original packages array with page: overflow.page first. Continue using path, offset: page.nextOffset and revision: page.revision. /results/17/... keeps original row index 17; start deferred children without a revision.',
       ),
-  }),
+      packages: z
+        .array(PackageInputSchema.describe('One package to audit.'))
+        .min(1)
+        .max(maxSubmitted)
+        .describe(
+          'Packages to audit. One entry per dependency. Positional: result[i] corresponds to packages[i].',
+        ),
+    }),
 
-  output: BatchOutput,
+    output: BatchOutput,
 
-  errors: [
-    {
-      reason: 'invalid_page_path',
-      code: JsonRpcErrorCode.ValidationError,
-      when: 'The pointer is unknown or cannot fit a bounded page.',
-      recovery: 'Use an announced pointer or an available parent field and retry.',
-      thrownBy: 'service',
+    errors: [
+      {
+        reason: 'invalid_page_path',
+        code: JsonRpcErrorCode.ValidationError,
+        when: 'The pointer is unknown or cannot fit a bounded page.',
+        recovery: 'Use an announced pointer or an available parent field and retry.',
+        thrownBy: 'service',
+      },
+      {
+        reason: 'stale_page_revision',
+        code: JsonRpcErrorCode.ValidationError,
+        when: 'The re-fetched node or input order changed.',
+        recovery: 'Restart this node at offset zero without a revision.',
+        thrownBy: 'service',
+      },
+    ],
+
+    enrichment: {
+      notice: z
+        .string()
+        .optional()
+        .describe(
+          'Present on all-clean or all-errors batches — the aggregate outcome for content-only clients.',
+        ),
+      effectiveQuery: z
+        .string()
+        .optional()
+        .describe(
+          'Compact scan summary (package and outcome counts), echoed on edge-case batches for content-only clients.',
+        ),
     },
-    {
-      reason: 'stale_page_revision',
-      code: JsonRpcErrorCode.ValidationError,
-      when: 'The re-fetched node or input order changed.',
-      recovery: 'Restart this node at offset zero without a revision.',
-      thrownBy: 'service',
-    },
-  ],
 
-  enrichment: {
-    notice: z
-      .string()
-      .optional()
-      .describe(
-        'Present on all-clean or all-errors batches — the aggregate outcome for content-only clients.',
-      ),
-    effectiveQuery: z
-      .string()
-      .optional()
-      .describe(
-        'Compact scan summary (package and outcome counts), echoed on edge-case batches for content-only clients.',
-      ),
-  },
+    async handler(input, ctx) {
+      ctx.log.info('OSV batch query', { packageCount: input.packages.length });
+      const submittedPackages = input.packages.length;
+      const packages = input.packages
+        .slice(0, BATCH_PROCESS_LIMIT)
+        .map((pkg) =>
+          'name' in pkg ? { name: pkg.name, ecosystem: pkg.ecosystem, version: pkg.version } : pkg,
+        );
+      const unprocessedCount = submittedPackages - packages.length;
+      const nextInputOffset = unprocessedCount > 0 ? packages.length : null;
+      const inputRemainder =
+        nextInputOffset === null
+          ? undefined
+          : `Submit packages.slice(${nextInputOffset}) in a new call and add ${nextInputOffset} to its row indices.`;
 
-  async handler(input, ctx) {
-    ctx.log.info('OSV batch query', { packageCount: input.packages.length });
-    const packages = input.packages.map((pkg) =>
-      'name' in pkg ? { name: pkg.name, ecosystem: pkg.ecosystem, version: pkg.version } : pkg,
-    );
-
-    const service = getOsvApiService();
-    const rowContext = input.page
-      ? { ...ctx, signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(50000)]) }
-      : ctx;
-    const project = (r: Awaited<ReturnType<typeof service.queryBatch>>[number]) => ({
-      name: r.name,
-      ecosystem: r.ecosystem,
-      version: r.version,
-      ...(r.purl === undefined ? {} : { purl: r.purl }),
-      vulnerable: r.vulns.length > 0,
-      truncated: r.truncated,
-      error: r.error,
-      vulnCount: r.vulns.length,
-      vulns: r.vulns,
-    });
-    const fetchRow = async (index: number) => {
-      const pkg = packages[index];
-      if (!pkg)
-        throw validationError('Unknown original batch row index.', { reason: 'invalid_page_path' });
-      const [row] = await service.queryBatch([pkg], rowContext);
-      if (!row) throw serviceUnavailable('OSV batch service omitted its requested row.');
-      return project(row);
-    };
-    if (input.page?.path === '/results')
-      return pageRows(
-        input.packages.length,
-        input.page,
-        nodeRevision(input.packages),
-        fetchRow,
-        measureBatch,
-      );
-    if (input.page?.path.startsWith('/results/')) {
-      const match = /^\/results\/(0|[1-9]\d*)(\/.*)?$/.exec(input.page.path);
-      const index = match ? Number(match[1]) : -1;
-      if (!match || index < 0 || index >= input.packages.length)
-        throw validationError('Unknown original batch row index.', { reason: 'invalid_page_path' });
-      const row = await fetchRow(index);
-      const node = resolvePointer(row, match[2] ?? '');
-      return pageValue(node, input.page, measureBatch);
-    }
-    if (input.page)
-      throw validationError(
-        'Batch pages select /results or /results/<index>/... only. Make a fresh initial call for aggregate summary.',
-        { reason: 'invalid_page_path' },
-      );
-    const rawResults = await service.queryBatch(packages, ctx);
-
-    // Build typed result rows
-    const results = rawResults.map(project);
-
-    // Aggregate stats. A truncated row is never counted as clean — its result may
-    // be incomplete, so "clean" requires no vulns, no error, AND not truncated.
-    const vulnerableRows = results.flatMap((row, index) => (row.vulnerable ? [index] : []));
-    const errorRows = results.flatMap((row, index) => (row.error !== null ? [index] : []));
-    const truncatedRows = results.flatMap((row, index) => (row.truncated ? [index] : []));
-    const vulnerableCount = vulnerableRows.length;
-    const errorCount = errorRows.length;
-    const truncatedCount = truncatedRows.length;
-    const cleanCount = results.filter(
-      (r) => !r.vulnerable && r.error === null && !r.truncated,
-    ).length;
-    const totalVulns = results.reduce((sum, r) => sum + r.vulnCount, 0);
-    const allSeverities = results.flatMap((r) => r.vulns.map((v) => v.severityLabel));
-    const worst = worstSeverity(allSeverities);
-
-    const summary = {
-      totalPackages: results.length,
-      vulnerableCount,
-      cleanCount,
-      truncatedCount,
-      errorCount,
-      vulnerableRows,
-      errorRows,
-      truncatedRows,
-      totalVulns,
-      worstSeverity: worst,
-    };
-
-    ctx.log.info('OSV batch complete', {
-      totalPackages: results.length,
-      vulnerableCount,
-      truncatedCount,
-      totalVulns,
-    });
-
-    // "All clean" must exclude truncated rows — a truncated batch is not confirmed clean.
-    const allClean = vulnerableCount === 0 && errorCount === 0 && truncatedCount === 0;
-    const allErrors = errorCount === results.length;
-    const enrichment: { notice?: string; effectiveQuery?: string } = {};
-    if ((allClean || allErrors) && !input.page) {
-      enrichment.notice = allClean
-        ? `All ${results.length} package(s) clean — no known vulnerabilities.`
-        : `All ${results.length} package(s) errored — none could be checked.`;
-      enrichment.effectiveQuery = `${summary.totalPackages} package(s): ${vulnerableCount} vulnerable, ${cleanCount} clean, ${errorCount} error(s)`;
-    }
-
-    const full = { results, summary };
-    const shaped = boundResponse(full, (value) => measureBatch(value, enrichment), undefined, {
-      summary,
-    });
-    if ('overflow' in shaped && shaped.overflow) {
-      shaped.overflow.page.path = '/results';
-      const preview = (page: NonNullable<Retrieval['page']>) => ({
-        rows: page.entries,
-        totalRows: page.total,
-        nextOffset: page.nextOffset,
-        notice:
-          'Initial-scan preview; row keys are original input indices. Remaining rows and deferred values are omitted, never confirmed clean. Retrieve /results for fresh row pages.',
+      const service = getOsvApiService();
+      const rowContext = input.page
+        ? { ...ctx, signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(50000)]) }
+        : ctx;
+      const project = (r: Awaited<ReturnType<typeof service.queryBatch>>[number]) => ({
+        name: r.name,
+        ecosystem: r.ecosystem,
+        version: r.version,
+        ...(r.purl === undefined ? {} : { purl: r.purl }),
+        vulnerable: r.vulns.length > 0,
+        truncated: r.truncated,
+        ...(r.nextCursor === undefined ? {} : { nextCursor: r.nextCursor }),
+        error: r.error,
+        vulnCount: r.vulns.length,
+        vulns: r.vulns,
       });
-      const previewPage = pageValue(
-        results,
-        { path: '/results', offset: 0 },
-        (value) =>
-          measureBatch({
-            ...shaped,
-            preview: preview(RetrievalOutput.shape.page.unwrap().parse(value.page)),
-          }),
-        {},
-        nodeRevision(input.packages),
-      );
-      shaped.preview = preview(RetrievalOutput.shape.page.unwrap().parse(previewPage.page));
-    }
-    if (!('overflow' in shaped)) {
-      if (enrichment.notice !== undefined) ctx.enrich.notice(enrichment.notice);
-      if (enrichment.effectiveQuery !== undefined) ctx.enrich.echo(enrichment.effectiveQuery);
-    }
-    return shaped;
-  },
+      const fetchRow = async (index: number) => {
+        const pkg = packages[index];
+        if (!pkg)
+          throw validationError('Unknown original batch row index.', {
+            reason: 'invalid_page_path',
+          });
+        const [row] = await service.queryBatch([pkg], rowContext);
+        if (!row) throw serviceUnavailable('OSV batch service omitted its requested row.');
+        return project(row);
+      };
+      if (input.page?.path === '/results')
+        return pageRows(
+          packages.length,
+          input.page,
+          nodeRevision(input.packages),
+          fetchRow,
+          measureBatch,
+        );
+      if (input.page?.path.startsWith('/results/')) {
+        const match = /^\/results\/(0|[1-9]\d*)(\/.*)?$/.exec(input.page.path);
+        const index = match ? Number(match[1]) : -1;
+        if (!match || index < 0 || index >= input.packages.length)
+          throw validationError('Unknown original batch row index.', {
+            reason: 'invalid_page_path',
+          });
+        if (index >= packages.length)
+          throw validationError(`This batch row was not processed. ${inputRemainder}`, {
+            reason: 'invalid_page_path',
+            recovery: { hint: inputRemainder },
+          });
+        const row = await fetchRow(index);
+        const node = resolvePointer(row, match[2] ?? '');
+        const retained = row.nextCursor === undefined ? {} : { nextCursor: row.nextCursor };
+        return pageValue(node, input.page, measureBatch, retained);
+      }
+      if (input.page)
+        throw validationError(
+          'Batch pages select /results or /results/<index>/... only. Make a fresh initial call for aggregate summary.',
+          { reason: 'invalid_page_path' },
+        );
+      if (unprocessedCount > 0) {
+        overCapBatches.add(1);
+        ctx.log.info('OSV batch processing a prefix', { submittedPackages, unprocessedCount });
+      }
+      const rawResults = await service.queryBatch(packages, ctx);
 
-  format: renderBatch,
-});
+      // Build typed result rows
+      const results = rawResults.map(project);
+
+      // Aggregate stats. A truncated row is never counted as clean — its result may
+      // be incomplete, so "clean" requires no vulns, no error, AND not truncated.
+      const vulnerableRows = results.flatMap((row, index) => (row.vulnerable ? [index] : []));
+      const errorRows = results.flatMap((row, index) => (row.error !== null ? [index] : []));
+      const truncatedRows = results.flatMap((row, index) => (row.truncated ? [index] : []));
+      const vulnerableCount = vulnerableRows.length;
+      const errorCount = errorRows.length;
+      const truncatedCount = truncatedRows.length;
+      const cleanCount = results.filter(
+        (r) => !r.vulnerable && r.error === null && !r.truncated,
+      ).length;
+      const totalVulns = results.reduce((sum, r) => sum + r.vulnCount, 0);
+      const allSeverities = results.flatMap((r) => r.vulns.map((v) => v.severityLabel));
+      const worst = worstSeverity(allSeverities);
+
+      const summary = {
+        totalPackages: results.length,
+        submittedPackages,
+        unprocessedCount,
+        nextInputOffset,
+        ...(inputRemainder === undefined ? {} : { inputRemainder }),
+        vulnerableCount,
+        cleanCount,
+        truncatedCount,
+        errorCount,
+        vulnerableRows,
+        errorRows,
+        truncatedRows,
+        totalVulns,
+        worstSeverity: worst,
+      };
+
+      ctx.log.info('OSV batch complete', {
+        totalPackages: results.length,
+        vulnerableCount,
+        truncatedCount,
+        totalVulns,
+      });
+
+      // "All clean" must exclude truncated rows — a truncated batch is not confirmed clean.
+      const allClean =
+        unprocessedCount === 0 && vulnerableCount === 0 && errorCount === 0 && truncatedCount === 0;
+      const allErrors = errorCount === results.length;
+      const enrichment: { notice?: string; effectiveQuery?: string } = {};
+      if ((allClean || allErrors) && !input.page) {
+        enrichment.notice = allClean
+          ? `All ${results.length} package(s) clean — no known vulnerabilities.`
+          : `All ${results.length} package(s) errored — none could be checked.`;
+        enrichment.effectiveQuery = `${summary.totalPackages} package(s): ${vulnerableCount} vulnerable, ${cleanCount} clean, ${errorCount} error(s)`;
+      }
+
+      const full = { results, summary };
+      const shaped = boundResponse(full, (value) => measureBatch(value, enrichment), undefined, {
+        summary,
+      });
+      if ('overflow' in shaped && shaped.overflow) {
+        shaped.overflow.page.path = '/results';
+        const preview = (page: NonNullable<Retrieval['page']>) => ({
+          rows: page.entries,
+          totalRows: page.total,
+          nextOffset: page.nextOffset,
+          notice:
+            'Initial-scan preview; row keys are original input indices. Remaining rows and deferred values are omitted, never confirmed clean. Retrieve /results for fresh row pages.',
+        });
+        const previewPage = pageValue(
+          results,
+          { path: '/results', offset: 0 },
+          (value) =>
+            measureBatch({
+              ...shaped,
+              preview: preview(RetrievalOutput.shape.page.unwrap().parse(value.page)),
+            }),
+          {},
+          nodeRevision(input.packages),
+        );
+        shaped.preview = preview(RetrievalOutput.shape.page.unwrap().parse(previewPage.page));
+      }
+      if (!('overflow' in shaped)) {
+        if (enrichment.notice !== undefined) ctx.enrich.notice(enrichment.notice);
+        if (enrichment.effectiveQuery !== undefined) ctx.enrich.echo(enrichment.effectiveQuery);
+      }
+      return shaped;
+    },
+
+    format: renderBatch,
+  });
+}
+
+/** Batch tool with the default submission ceiling. */
+export const osvQueryBatch = createOsvQueryBatch(true);
 
 const measureBatch: (
   value: Retrieval & Record<string, unknown>,

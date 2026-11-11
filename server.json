@@ -26,7 +26,7 @@
           "description": "HTTP request timeout in milliseconds for OSV.dev API calls.",
           "format": "string",
           "isRequired": false,
-          "default": "10000"
+          "default": "40000"
         },
         {
           "name": "OSV_BATCH_CONCURRENCY",
@@ -48,6 +48,13 @@
           "format": "string",
           "isRequired": false,
           "default": "info"
+        },
+        {
+          "name": "OSV_BATCH_SERVE_OVER_CAP",
+          "description": "Accept up to 5000 packages and process the first 1000. Set false to reject submissions over 1000.",
+          "format": "string",
+          "isRequired": false,
+          "default": "true"
         }
       ],
       "transport": {
@@ -72,7 +79,7 @@
           "description": "HTTP request timeout in milliseconds for OSV.dev API calls.",
           "format": "string",
           "isRequired": false,
-          "default": "10000"
+          "default": "40000"
         },
         {
           "name": "OSV_BATCH_CONCURRENCY",
@@ -94,6 +101,13 @@
           "format": "string",
           "isRequired": false,
           "default": "127.0.0.1"
+        },
+        {
+          "name": "OSV_BATCH_SERVE_OVER_CAP",
+          "description": "Accept up to 5000 packages and process the first 1000. Set false to reject submissions over 1000.",
+          "format": "string",
+          "isRequired": false,
+          "default": "true"
         },
         {
           "name": "MCP_HTTP_PORT",

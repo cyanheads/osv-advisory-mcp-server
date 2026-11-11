@@ -1,6 +1,6 @@
 # osv-advisory-mcp-server - Directory Structure
 
-Generated on: 2026-11-01 04:47:30
+Generated on: 2026-11-11 11:54:19
 
 ```text
 osv-advisory-mcp-server/
@@ -159,6 +159,7 @@ osv-advisory-mcp-server/
 │   │       │   ├── osv-query-batch.tool.ts
 │   │       │   ├── osv-query-commit.tool.ts
 │   │       │   └── osv-query-package.tool.ts
+│   │       ├── continuation-fields.ts
 │   │       ├── package-input.ts
 │   │       ├── render-escape.ts
 │   │       └── response-pages.ts
@@ -167,6 +168,7 @@ osv-advisory-mcp-server/
 │   │       ├── affected-match.ts
 │   │       ├── osv-api-service.ts
 │   │       ├── package-identifier.ts
+│   │       ├── query-cursor.ts
 │   │       ├── severity.ts
 │   │       └── types.ts
 │   └── index.ts
@@ -205,12 +207,14 @@ osv-advisory-mcp-server/
 │   │   ├── identifier-timing.test.ts
 │   │   ├── osv-api-service.test.ts
 │   │   ├── osv-native-batch.test.ts
+│   │   ├── osv-query-deadline.test.ts
 │   │   └── package-identifier.test.ts
 │   └── tools/
 │       ├── __snapshots__/
 │       │   ├── osv-get-vulnerability.tool.test.ts.snap
 │       │   ├── osv-query-batch.tool.test.ts.snap
 │       │   └── osv-query-package.tool.test.ts.snap
+│       ├── osv-continuation.test.ts
 │       ├── osv-get-vulnerability.tool.test.ts
 │       ├── osv-list-ecosystems.tool.test.ts
 │       ├── osv-native-batch.tool.test.ts

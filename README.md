@@ -36,7 +36,7 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 | Tool | Description |
 |:---|:---|
 | `osv_query_package` | Query a package version by name/ecosystem/version or Package URL (PURL) |
-| `osv_query_batch` | Audit up to 1000 package versions in one call — a full dependency list or SBOM |
+| `osv_query_batch` | Audit the first 1,000 package versions in a submission of up to 5,000 |
 | `osv_query_commit` | Query known vulnerabilities for a full Git commit hash |
 | `osv_get_vulnerability` | Fetch the full advisory record for a single OSV vulnerability ID |
 | `osv_list_ecosystems` | Return the list of supported ecosystem identifier strings |
@@ -48,16 +48,18 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 - Provide `name`, `ecosystem` (case-sensitive exact match), and `version`, or a `purl` such as `pkg:pypi/jinja2@3.1.4`. A PURL needs exactly one version: embedded in the URL or supplied separately. Versions are exact, never ranges
 - Unsupported ecosystem-specific constraints fail as `invalid_version`; npm/crates.io exact pins with `=` or `==` normalize to the installed version
 - Each advisory carries CVE `aliases`, `severityLabel` with its `severitySource`, the queried package's `fixedVersions`, `affectedRanges`, and `cweIds`
-- `truncated: true` means OSV had more pages than `OSV_QUERY_MAX_PAGES` follows, so an empty `vulns` list is not a clean result; an unrecognized ecosystem fails as `invalid_ecosystem`
+- `truncated: true` indicates more OSV pages remain. Pass `nextCursor` as `cursor` with the same identifier to continue. Repeat that input cursor alongside `page` when retrieving fields from a resumed reply. An empty initial complete result confirms no known vulnerabilities. An empty terminal resume only confirms exhaustion of the continuation
 
 ---
 
 ### `osv_query_batch` <sub>tool</sub>
 
-- 1–1000 `{name, ecosystem, version}` tuples or `{purl, version?}` entries per call; mix either form, and `results[i]` matches `packages[i]`
+- Submit 1–5,000 `{name, ecosystem, version}` tuples or `{purl, version?}` entries. The call processes the first 1,000. Set `OSV_BATCH_SERVE_OVER_CAP=false` to reject submissions above 1,000
+- `summary.submittedPackages`, `unprocessedCount`, and `nextInputOffset` account for the input. If `nextInputOffset` is set, submit `packages.slice(nextInputOffset)` in a new call and add that offset to its row indices. All outcome counts describe the processed prefix
 - Each row carries `vulnerable`, `vulnCount`, `vulns`, `truncated`, and `error`; a failure lands in the affected rows' `error` instead of failing the call
 - `summary` totals the scan (`vulnerableCount`, `cleanCount`, `truncatedCount`, `errorCount`, `totalVulns`, `worstSeverity`), and truncated rows never count as clean. The whole scan has a 50-second deadline
 - `vulnerableRows`, `errorRows`, and `truncatedRows` in `summary` retain original zero-based indices even when the preview omits those rows. Lists can overlap; retrieve a row with `/results/<index>`
+- Resume a row through `osv_query_package` with its original identifier and `nextCursor` as `cursor`
 
 ---
 
@@ -65,7 +67,7 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 
 - One full `commit`: 40 hexadecimal characters for SHA-1 or 64 for SHA-256; either letter case is accepted, abbreviations are rejected
 - Advisories retain record-wide severity, aliases, and GIT ranges with repository URLs and ordered events. No package-specific `fixedVersions` are inferred
-- `truncated: true` means more OSV pages remain; an empty truncated result is not confirmed clean
+- Pass `nextCursor` as `cursor` with the same commit to continue a truncated result. An empty terminal resume confirms the continuation is exhausted
 
 ---
 
@@ -134,9 +136,10 @@ All configuration is validated at startup, and every variable is optional.
 
 | Variable | Description | Default |
 |:---------|:------------|:--------|
-| `OSV_REQUEST_TIMEOUT_MS` | HTTP request timeout for OSV.dev API calls, in milliseconds. | `10000` |
+| `OSV_REQUEST_TIMEOUT_MS` | Timeout per OSV.dev HTTP attempt, in milliseconds. Package, commit and batch queries share a 50-second per-operation deadline across requests, retries, response reads and hydration. | `40000` |
 | `OSV_BATCH_CONCURRENCY` | Maximum concurrent OSV.dev requests issued by `osv_query_batch`. | `10` |
 | `OSV_QUERY_MAX_PAGES` | Maximum OSV.dev result pages followed per package or commit before a result is marked `truncated`. | `10` |
+| `OSV_BATCH_SERVE_OVER_CAP` | Accept up to 5,000 packages and process the first 1,000. Set `false` to restore the 1,000-entry submission ceiling. | `true` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | Port for HTTP server. | `3010` |
 | `MCP_HTTP_ENDPOINT_PATH` | HTTP endpoint path. | `/mcp` |
@@ -144,7 +147,7 @@ All configuration is validated at startup, and every variable is optional.
 | `MCP_SESSION_MODE` | HTTP session mode: `stateless`, `stateful`, or `auto`. | `stateless` |
 | `MCP_AUTH_MODE` | Auth mode: `none`, `jwt`, or `oauth`. | `none` |
 | `MCP_LOG_LEVEL` | Log level (RFC 5424). | `info` |
-| `LOGS_DIR` | Directory for log files (Node.js only). | `<project-root>/logs` |
+| `LOGS_DIR` | Directory for log files. Relative paths resolve from the server package root. | `<server-package-root>/logs` |
 | `LOG_TOOL_FAILURE_PAYLOADS` | Log each failed tool call's arguments and result, redacted by key name and capped at `LOG_TOOL_FAILURE_PAYLOAD_MAX_BYTES` (default `16384`). A secret inside a free-form value is not redacted. | `false` |
 | `STORAGE_PROVIDER_TYPE` | Storage backend. | `in-memory` |
 | `OTEL_ENABLED` | Enable [OpenTelemetry instrumentation](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry) (spans, metrics, completion logs). | `false` |
@@ -155,7 +158,7 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ### Local development
 
-Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+Requires [Bun v1.4.4](https://bun.sh/) or higher (or Node.js v24+).
 
 ```sh
 git clone https://github.com/cyanheads/osv-advisory-mcp-server.git

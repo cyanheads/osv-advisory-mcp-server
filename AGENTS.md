@@ -2,8 +2,8 @@
 
 **Server:** osv-advisory-mcp-server
 **Version:** 0.4.1
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.18`
-**Engines:** Bun ≥1.4.0, Node ≥24.0.0
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.22`
+**Engines:** Bun ≥1.4.4, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/server` ^2.4.0
 **Zod:** ^4.6.7
 
@@ -85,7 +85,7 @@ const ServerConfigSchema = z.object({
   requestTimeoutMs: z.coerce
     .number()
     .positive()
-    .default(10000)
+    .default(40000)
     .describe('HTTP request timeout for OSV.dev API calls (ms).'),
   batchConcurrency: z.coerce
     .number()
@@ -99,6 +99,9 @@ const ServerConfigSchema = z.object({
     .positive()
     .default(10)
     .describe('Max OSV pages followed per package or commit before marking results truncated.'),
+  batchServeOverCap: z
+    .stringbool({ truthy: ['true'], falsy: ['false'], case: 'sensitive' })
+    .default(true),
 });
 
 let _config: z.infer<typeof ServerConfigSchema> | undefined;
@@ -107,6 +110,7 @@ export function getServerConfig() {
     requestTimeoutMs: 'OSV_REQUEST_TIMEOUT_MS',
     batchConcurrency: 'OSV_BATCH_CONCURRENCY',
     maxQueryPages: 'OSV_QUERY_MAX_PAGES',
+    batchServeOverCap: 'OSV_BATCH_SERVE_OVER_CAP',
   });
   return _config;
 }
@@ -114,7 +118,9 @@ export function getServerConfig() {
 
 `parseEnvConfig` maps Zod schema paths → env var names so errors name the variable (`OSV_REQUEST_TIMEOUT_MS`) not the path (`requestTimeoutMs`). Throws `ConfigurationError`, which the framework prints as a clean startup banner.
 
-> **This server has no required env vars.** OSV.dev is fully public and keyless. `OSV_REQUEST_TIMEOUT_MS`, `OSV_BATCH_CONCURRENCY`, and `OSV_QUERY_MAX_PAGES` are optional positive values with defaults of 10000 ms, 10, and 10. Invalid values fail startup rather than silently defaulting.
+> **This server has no required env vars.** OSV.dev is public and keyless. `OSV_REQUEST_TIMEOUT_MS`, `OSV_BATCH_CONCURRENCY`, and `OSV_QUERY_MAX_PAGES` default to 40000 ms, 10, and 10. `OSV_BATCH_SERVE_OVER_CAP` defaults to `true` and accepts only `true` or `false`. Invalid values fail startup.
+
+Package, commit and batch queries have one 50-second operation deadline. A batch cursor advances only through fully hydrated pages. Field retrieval repeats the same input cursor on resumed package and commit queries. Batch submission remainders use `summary.nextInputOffset`, while field pages address only the processed prefix.
 
 ### Server instructions
 

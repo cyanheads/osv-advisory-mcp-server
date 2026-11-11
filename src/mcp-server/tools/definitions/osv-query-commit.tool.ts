@@ -5,6 +5,13 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getOsvApiService } from '@/services/osv-api/osv-api-service.js';
+import {
+  CONTINUATION_EXHAUSTED_NOTICE,
+  ContinuationExhausted,
+  CursorInput,
+  cursorBlock,
+  NextCursor,
+} from '../continuation-fields.js';
 import { escapeAdvisoryBlock } from '../render-escape.js';
 import {
   boundResponse,
@@ -25,6 +32,8 @@ const CommitAdvisory = VulnOutputSchema.omit({ fixedVersions: true }).extend({
   ),
 });
 const CommitFullOutput = z.object({
+  nextCursor: NextCursor,
+  continuationExhausted: ContinuationExhausted,
   vulns: z
     .array(
       CommitAdvisory.describe(
@@ -32,12 +41,12 @@ const CommitFullOutput = z.object({
       ),
     )
     .describe(
-      'Matching advisories. Empty confirms no known vulnerabilities only when truncated is false.',
+      'Matching advisories. An empty initial result confirms no known vulnerabilities only when truncated is false. An empty terminal resume confirms exhaustion of the continuation.',
     ),
   truncated: z
     .boolean()
     .describe(
-      'More OSV pages remain beyond the fetch cap; an empty truncated list is not confirmed clean.',
+      'True when the page cap or operation deadline interrupted OSV matching. Use nextCursor to continue.',
     ),
   queryMeta: z
     .object({
@@ -50,12 +59,19 @@ const CommitOutput = CommitFullOutput.partial().extend(RetrievalOutput.shape);
 
 function renderCommit(result: z.infer<typeof CommitOutput>): Array<{ type: 'text'; text: string }> {
   const retrieval = renderRetrieval(result);
+  if (result.nextCursor !== undefined) retrieval.unshift(cursorBlock(result.nextCursor));
+  if (result.truncated && result.vulns === undefined)
+    retrieval.unshift({ type: 'text', text: 'truncated: true' });
+  if (result.continuationExhausted && result.vulns === undefined)
+    retrieval.unshift({ type: 'text', text: CONTINUATION_EXHAUSTED_NOTICE });
   if (result.vulns === undefined || result.queryMeta === undefined) return retrieval;
-  const full = CommitFullOutput.parse(result);
+  const { nextCursor: _nextCursor, ...full } = CommitFullOutput.parse(result);
   const notice = full.truncated
     ? 'Results are INCOMPLETE; more OSV pages remain. This is not confirmed clean.'
     : full.vulns.length === 0
-      ? 'No known vulnerabilities found.'
+      ? full.continuationExhausted
+        ? CONTINUATION_EXHAUSTED_NOTICE
+        : 'No known vulnerabilities found.'
       : 'Commit-matching advisories:';
   return [
     {
@@ -83,9 +99,18 @@ export const osvQueryCommit = tool('osv_query_commit', {
     page: PageInput.optional().describe(
       'Repeat the original commit with page: overflow.page first, then select path, offset: page.nextOffset and revision: page.revision.',
     ),
+    cursor: CursorInput,
   }),
   output: CommitOutput,
   errors: [
+    {
+      reason: 'invalid_cursor',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The cursor is malformed, belongs to another query, or was rejected by OSV.',
+      recovery:
+        'Use the unchanged nextCursor with the same full commit hash, or omit cursor to start over.',
+      thrownBy: 'service',
+    },
     {
       reason: 'invalid_commit_query',
       code: JsonRpcErrorCode.ValidationError,
@@ -109,15 +134,27 @@ export const osvQueryCommit = tool('osv_query_commit', {
     },
   ],
   async handler(input, ctx) {
-    const result = await getOsvApiService().queryCommit(input.commit, ctx);
+    const service = getOsvApiService();
+    const result =
+      input.cursor === undefined
+        ? await service.queryCommit(input.commit, ctx)
+        : await service.queryCommit(input.commit, ctx, input.cursor);
     if ('invalid' in result) throw ctx.fail('invalid_commit_query', result.message);
+    const exhausted = input.cursor !== undefined && !result.truncated && result.vulns.length === 0;
+    const retained =
+      result.nextCursor === undefined
+        ? exhausted
+          ? { continuationExhausted: true as const }
+          : {}
+        : { nextCursor: result.nextCursor, truncated: true };
     const full = {
+      ...retained,
       vulns: result.vulns.map((record) => CommitAdvisory.parse(record)),
       truncated: result.truncated,
       queryMeta: { commit: input.commit, vulnCount: result.vulns.length },
     };
-    if (input.page) return pageNode(full, input.page, measureCommit);
-    return boundResponse(full, measureCommit);
+    if (input.page) return pageNode(full, input.page, measureCommit, retained);
+    return boundResponse(full, measureCommit, undefined, retained);
   },
   format: renderCommit,
 });

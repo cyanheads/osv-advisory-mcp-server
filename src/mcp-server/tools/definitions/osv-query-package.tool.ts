@@ -14,6 +14,13 @@ import {
 import type { OsvPackageVulnerability } from '@/services/osv-api/osv-api-service.js';
 import { getOsvApiService } from '@/services/osv-api/osv-api-service.js';
 import { resolvePackage } from '@/services/osv-api/package-identifier.js';
+import {
+  CONTINUATION_EXHAUSTED_NOTICE,
+  ContinuationExhausted,
+  CursorInput,
+  cursorBlock,
+  NextCursor,
+} from '../continuation-fields.js';
 import { PackagePurlInput, PackageTupleInput } from '../package-input.js';
 import {
   boundResponse,
@@ -168,15 +175,17 @@ export const VulnOutputSchema = z.object({
 });
 
 const PackageFullOutput = z.object({
+  nextCursor: NextCursor,
+  continuationExhausted: ContinuationExhausted,
   vulns: z
     .array(VulnOutputSchema.describe('One vulnerability record.'))
     .describe(
-      'Vulnerabilities matching this package version. An empty array means no known vulnerabilities ONLY when truncated is false.',
+      'Vulnerabilities matching this package version. An empty initial result confirms no known vulnerabilities only when truncated is false. An empty terminal resume confirms exhaustion of the continuation.',
     ),
   truncated: z
     .boolean()
     .describe(
-      'True when OSV returned more result pages than the fetch cap could follow — the vulnerability list may be INCOMPLETE. A truncated empty list is NOT a clean result; raise OSV_QUERY_MAX_PAGES or narrow the query.',
+      'True when the page cap or operation deadline interrupted OSV matching. Use nextCursor to continue.',
     ),
   queryMeta: z
     .object({
@@ -196,6 +205,11 @@ function renderPackage(
   const retrieval = renderRetrieval(result, (path) =>
     /^(?:\/queryMeta\/(?:package|ecosystem|version|purl)|\/(?:notice|effectiveQuery))$/.test(path),
   );
+  if (result.nextCursor !== undefined) retrieval.unshift(cursorBlock(result.nextCursor));
+  if (result.truncated && result.vulns === undefined)
+    retrieval.unshift({ type: 'text', text: 'truncated: true' });
+  if (result.continuationExhausted)
+    retrieval.unshift({ type: 'text', text: CONTINUATION_EXHAUSTED_NOTICE });
   if (result.vulns === undefined || result.queryMeta === undefined) return retrieval;
   const lines: string[] = [];
   const { queryMeta } = result;
@@ -205,19 +219,18 @@ function renderPackage(
   if (queryMeta.purl !== undefined) lines.push(`**PURL:** ${escapeMarkdownInline(queryMeta.purl)}`);
 
   if (result.vulns.length === 0) {
-    lines.push(
-      result.truncated
-        ? '⚠️ **Results truncated** — OSV returned additional pages beyond the fetch cap. This is NOT a confirmed clean result; more vulnerabilities may exist. Raise OSV_QUERY_MAX_PAGES or narrow the query.'
-        : '✅ No known vulnerabilities found.',
-    );
+    if (!result.continuationExhausted)
+      lines.push(
+        result.truncated
+          ? '⚠️ **Results truncated** — additional OSV pages remain. Continue with nextCursor.'
+          : '✅ No known vulnerabilities found.',
+      );
     return [{ type: 'text', text: lines.join('\n') }, ...retrieval];
   }
 
   lines.push(`**Vulnerabilities found: ${result.vulns.length}**\n`);
   if (result.truncated) {
-    lines.push(
-      '⚠️ **Results truncated** — more advisory pages exist beyond the fetch cap; this list may be incomplete.\n',
-    );
+    lines.push('⚠️ **Results truncated** — more OSV pages remain. Continue with nextCursor.\n');
   }
 
   // Every OSV-sourced string passes through the render escape; queryMeta echoes caller input.
@@ -309,6 +322,7 @@ export const osvQueryPackage = tool('osv_query_package', {
           'PURL alternative to name and ecosystem; supply one embedded or separate version.',
         ),
       page: PackagePageInput,
+      cursor: CursorInput,
     })
     .superRefine((input, ctx) => {
       if (input.purl !== undefined) {
@@ -347,6 +361,14 @@ export const osvQueryPackage = tool('osv_query_package', {
   },
 
   errors: [
+    {
+      reason: 'invalid_cursor',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The cursor is malformed, belongs to another query, or was rejected by OSV.',
+      recovery:
+        'Use the unchanged nextCursor with the same effective package query, or omit cursor to start over.',
+      thrownBy: 'service',
+    },
     {
       reason: 'invalid_version',
       code: JsonRpcErrorCode.ValidationError,
@@ -431,6 +453,7 @@ export const osvQueryPackage = tool('osv_query_package', {
     });
     const service = getOsvApiService();
     if (input.page?.advisoryId) {
+      if (request.cursor !== undefined) service.validatePackageCursor(resolved, request.cursor);
       const advisory = await service.getPackageVulnerability(
         input.page.advisoryId,
         { name: input.name, ecosystem: input.ecosystem },
@@ -440,9 +463,18 @@ export const osvQueryPackage = tool('osv_query_package', {
       return pageNode(projectAdvisory(advisory), input.page, measurePackage);
     }
     const result =
-      input.purl === undefined
-        ? await service.queryPackage(input.name, input.ecosystem, input.version, ctx)
-        : await service.queryPackage(input.name, input.ecosystem, input.version, ctx, resolved);
+      request.cursor !== undefined
+        ? await service.queryPackage(
+            input.name,
+            input.ecosystem,
+            input.version,
+            ctx,
+            resolved,
+            request.cursor,
+          )
+        : input.purl === undefined
+          ? await service.queryPackage(input.name, input.ecosystem, input.version, ctx)
+          : await service.queryPackage(input.name, input.ecosystem, input.version, ctx, resolved);
 
     if (result.invalid) {
       if (input.purl !== undefined) throw ctx.fail('invalid_purl_query', result.message);
@@ -458,10 +490,12 @@ export const osvQueryPackage = tool('osv_query_package', {
     });
 
     const enrichment: { notice?: string; effectiveQuery?: string } = {};
-    if (result.vulns.length === 0) {
+    const exhausted =
+      request.cursor !== undefined && !result.truncated && result.vulns.length === 0;
+    if (result.vulns.length === 0 && !exhausted) {
       // A truncated empty page is NOT a clean result — never emit the false-clean notice.
       enrichment.notice = result.truncated
-        ? `Results for ${input.name}@${input.version} (${input.ecosystem}) are INCOMPLETE — OSV paginated beyond the fetch cap before any page fully resolved. This is NOT a clean result; raise OSV_QUERY_MAX_PAGES or narrow the query.`
+        ? `Results for ${input.name}@${input.version} (${input.ecosystem}) are INCOMPLETE. More OSV pages remain. Continue with nextCursor.`
         : `No known vulnerabilities for ${input.name}@${input.version} (${input.ecosystem}).`;
       enrichment.effectiveQuery = `${input.name}@${input.version} (${input.ecosystem})`;
     }
@@ -469,6 +503,8 @@ export const osvQueryPackage = tool('osv_query_package', {
     const full = {
       vulns: result.vulns.map(projectAdvisory),
       truncated: result.truncated,
+      ...(result.nextCursor === undefined ? {} : { nextCursor: result.nextCursor }),
+      ...(exhausted ? { continuationExhausted: true as const } : {}),
       queryMeta: {
         package: input.name,
         ecosystem: input.ecosystem,
@@ -477,7 +513,14 @@ export const osvQueryPackage = tool('osv_query_package', {
         vulnCount: result.vulns.length,
       },
     };
-    if (input.page) return pageNode({ ...full, ...enrichment }, input.page, measurePackage);
+    const retained =
+      result.nextCursor === undefined
+        ? exhausted
+          ? { continuationExhausted: true as const }
+          : {}
+        : { nextCursor: result.nextCursor, truncated: true };
+    if (input.page)
+      return pageNode({ ...full, ...enrichment }, input.page, measurePackage, retained);
     const shaped = boundResponse(
       full,
       (value) => measurePackage(value, enrichment),
@@ -492,7 +535,7 @@ export const osvQueryPackage = tool('osv_query_package', {
         truncated: full.truncated,
         queryMeta: full.queryMeta,
       },
-      {},
+      retained,
       { ...full, ...enrichment },
     );
     if (!('overflow' in shaped)) {

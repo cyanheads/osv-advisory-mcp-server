@@ -14,7 +14,8 @@
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
-        "NODE_ENV": "production"
+        "NODE_ENV": "production",
+        "OSV_BATCH_SERVE_OVER_CAP": "${user_config.OSV_BATCH_SERVE_OVER_CAP}"
       }
     }
   },
@@ -23,5 +24,13 @@
   },
   "tools_generated": true,
   "prompts_generated": true,
-  "user_config": {}
+  "user_config": {
+    "OSV_BATCH_SERVE_OVER_CAP": {
+      "type": "boolean",
+      "title": "Accept large batch submissions",
+      "description": "Accept up to 5000 packages and process the first 1000. False rejects submissions over 1000.",
+      "required": false,
+      "default": true
+    }
+  }
 }

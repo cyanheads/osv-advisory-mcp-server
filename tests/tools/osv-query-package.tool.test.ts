@@ -13,7 +13,7 @@ import { osvQueryPackage } from '@/mcp-server/tools/definitions/osv-query-packag
 async function fullHandler(...args: Parameters<typeof osvQueryPackage.handler>) {
   return osvQueryPackage.output
     .omit({ preview: true, overflow: true, page: true })
-    .required()
+    .required({ vulns: true, truncated: true, queryMeta: true })
     .parse(await osvQueryPackage.handler(...args));
 }
 

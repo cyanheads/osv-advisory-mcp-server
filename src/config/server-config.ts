@@ -11,7 +11,7 @@ import { z } from '@cyanheads/mcp-ts-core';
 import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 /** Default OSV.dev HTTP request timeout (ms) when `OSV_REQUEST_TIMEOUT_MS` is unset. */
-const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+export const DEFAULT_REQUEST_TIMEOUT_MS = 40_000;
 
 /** Default in-flight request cap for `osv_query_batch` when `OSV_BATCH_CONCURRENCY` is unset. */
 const DEFAULT_BATCH_CONCURRENCY = 10;
@@ -47,6 +47,10 @@ const ServerConfigSchema = z.object({
     .describe(
       'Maximum number of OSV.dev result pages followed per package or commit before marking a result truncated. Must be a positive integer.',
     ),
+  batchServeOverCap: z
+    .stringbool({ truthy: ['true'], falsy: ['false'], case: 'sensitive' })
+    .default(true)
+    .describe('Accept oversized batches and process their supported prefix.'),
 });
 
 export type ServerConfig = z.infer<typeof ServerConfigSchema>;
@@ -65,6 +69,7 @@ export function getServerConfig(): ServerConfig {
     requestTimeoutMs: 'OSV_REQUEST_TIMEOUT_MS',
     batchConcurrency: 'OSV_BATCH_CONCURRENCY',
     maxQueryPages: 'OSV_QUERY_MAX_PAGES',
+    batchServeOverCap: 'OSV_BATCH_SERVE_OVER_CAP',
   });
   return _config;
 }

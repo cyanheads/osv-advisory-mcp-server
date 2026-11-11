@@ -6,9 +6,9 @@
 
 | Name | Description | Key Inputs | Annotations | Errors |
 |:-----|:------------|:-----------|:------------|:-------|
-| `osv_query_package` | Query a package version, retaining package-scoped severity and fixes. | `{name, ecosystem, version}` or `{purl, version?}`; optional `page: {path, offset?, revision?, advisoryId?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | Invalid identifiers and page requests fail validation; `advisory_not_found` is NotFound |
-| `osv_query_batch` | Audit mixed tuple/PURL identifiers with positional results and package-scoped severity and fixes. | `packages` (1–1000 identifiers); optional `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | Invalid page requests fail validation; identifier and upstream failures set affected rows' `error`, cancellation fails the call |
-| `osv_query_commit` | Query a full Git commit with record-wide severity and GIT range details. | `commit` (40/64 hexadecimal characters); optional `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | `invalid_commit_query`, `invalid_page_path`, `stale_page_revision` (ValidationError) |
+| `osv_query_package` | Query a package version, retaining package-scoped severity and fixes. | `{name, ecosystem, version}` or `{purl, version?}`; optional `cursor` and `page: {path, offset?, revision?, advisoryId?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | Invalid identifiers, cursors and page requests fail validation; `advisory_not_found` is NotFound |
+| `osv_query_batch` | Audit mixed tuple/PURL identifiers with positional results and package-scoped severity and fixes. | `packages` (1–5,000 identifiers, processing the first 1,000); optional `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | Invalid page requests fail validation; identifier and upstream failures set affected rows' `error`, cancellation fails the call |
+| `osv_query_commit` | Query a full Git commit with record-wide severity and GIT range details. | `commit` (40/64 hexadecimal characters); optional `cursor` and `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | `invalid_commit_query`, `invalid_cursor`, `invalid_page_path`, `stale_page_revision` (ValidationError) |
 | `osv_get_vulnerability` | Fetch the full record for one exact OSV advisory ID (`GHSA-…`, `PYSEC-…`, `RUSTSEC-…`, `GO-…`, `DSA-…-1`, `USN-…-1`, `RHSA-…`, `CVE-…`). Returns: summary, details, aliases (CVE IDs), severity, affected packages/ranges, fix versions, CWE IDs, references. | `id` (one complete OSV advisory ID); optional `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | `vulnerability_not_found` (NotFound); `invalid_page_path`, `stale_page_revision` (ValidationError) |
 | `osv_list_ecosystems` | Return the list of supported ecosystem strings. Use before querying to validate the `ecosystem` parameter — ecosystem strings are case-sensitive exact matches. | none | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | — |
 
@@ -66,9 +66,10 @@ Framework env vars (`MCP_TRANSPORT_TYPE`, `MCP_HTTP_PORT`, `STORAGE_PROVIDER_TYP
 
 | Env Var | Required | Description |
 |:--------|:---------|:------------|
-| `OSV_REQUEST_TIMEOUT_MS` | No | HTTP request timeout in milliseconds. Default: 10000. |
+| `OSV_REQUEST_TIMEOUT_MS` | No | HTTP timeout per attempt in milliseconds. Default: 40000. |
 | `OSV_BATCH_CONCURRENCY` | No | Maximum concurrent OSV.dev requests issued by `osv_query_batch`. Default: 10. |
 | `OSV_QUERY_MAX_PAGES` | No | Maximum OSV.dev result pages followed per package or commit before marking a result truncated. Default: 10. |
+| `OSV_BATCH_SERVE_OVER_CAP` | No | Accept up to 5,000 identifiers and process the first 1,000. Set `false` to advertise and enforce 1,000. Default: `true`. |
 
 ---
 
@@ -105,6 +106,8 @@ Versions are exact installed versions, validated before upstream work to avoid O
 
 Commit queries use a dedicated tool because a commit has no package identity. They accept complete SHA-1 or SHA-256 hashes, normalize severity across the record, preserve GIT repositories and ordered range events, and omit package-specific `fixedVersions`. They share the bounded retrieval model and upstream page cap.
 
+Package, commit and batch queries use a 50-second deadline across requests, retries, body reads and hydration. If the deadline expires after a usable page, the reply returns findings through that checkpoint and a `nextCursor`. Before a usable checkpoint, deadline expiry fails the query or affected batch row. Caller cancellation propagates.
+
 ### Bounded stateless retrieval
 
 `mcp-server/tools/response-pages.ts` measures the complete dual-surface success reply against a fixed 24,000-byte UTF-8 ceiling, including declared enrichment and its framework trailer. It preserves fitting legacy replies; transmission overflow replaces the full payload with a measured preview and an addressable outline. The flat output schemas make full fields optional and independently render each present `preview`, `overflow`, or `page` arm. The full-branch schemas and examples below describe the unchanged normalized data, not a promise that every call inlines it.
@@ -113,23 +116,23 @@ All four advisory tools accept `page: {path, offset?, revision?}`. `osv_query_pa
 
 Package previews retain every advisory ID, alias, scoped severity label and fix when their compact view fits, and explicitly identify a complete advisory list. If it does not fit, `/vulns` remains retrievable and the list is disclosed as incomplete. Every affected package, package-less GIT range, ordered event and repeated version remains addressable; normalization is unchanged.
 
-The initial batch computes and retains the complete scan summary before omitting rows. Its ascending zero-based `vulnerableRows`, `errorRows`, and `truncatedRows` independently mirror the corresponding count predicates; vulnerable and errored rows can also be truncated. The complete lists survive transmission overflow at the 1000-row cap by reducing preview capacity. `/results` pages fetch successive rows on demand; `/results/17/...` fetches only original row 17 and applies its existing brief projection. Neither recomputes whole-batch counts or memberships. Other batch continuation pointers fail before upstream work and direct a fresh initial scan. Array entry keys retain original input indices.
+The initial batch computes and retains the complete summary of the processed prefix before omitting rows. Its ascending zero-based `vulnerableRows`, `errorRows`, and `truncatedRows` independently mirror the corresponding count predicates; vulnerable and errored rows can also be truncated. `submittedPackages`, `unprocessedCount`, `nextInputOffset` and the remainder instructions survive overflow with the membership lists. Submit `packages.slice(nextInputOffset)` in a separate call when an offset is present. `/results` pages fetch successive rows from the processed prefix; `/results/17/...` fetches only original row 17. Pointers into the unprocessed suffix fail before upstream work. Array entry keys retain original input indices.
 
 `overflow.complete` names complete source fields retained either at the top level or unchanged in the surviving preview, using bare field names. Preview-only annotations are excluded. A retained field such as `queryMeta` or `truncated` is not simultaneously omitted; omitted descriptors preserve JSON pointers for retrieval. Reduced advisory previews leave `/vulns` omitted even when every advisory ID is visible, because they omit source advisory fields.
 
 Node revisions hash normalized JSON. Supplied stale revisions fail with `stale_page_revision`; unknown pointers fail with `invalid_page_path`, bounded available fields and restart guidance. Batch collection revisions hash the original input order because each row is separately re-fetched; row/subnode revisions hash the addressed value. Re-fetching is explicitly fresh lookup, never historical retention. No database, session state, cache, extra tool, configurable budget or DataCanvas dependency is introduced: traversal does not need a data platform, and neither row spillover nor unbounded section selection segments a huge child or bounds the complete reply.
 
-`truncated` describes the upstream page cap only. Transmission omission never changes clean counts or converts an incomplete row into a confirmed clean result.
+`truncated` describes incomplete upstream matching. Pass `nextCursor` back as `cursor` with the same effective package or commit query. Malformed or mismatched cursors fail as `invalid_cursor` before I/O, and upstream rejection of a token uses the same reason. Repeat the input cursor when retrieving fields from a resumed query. An empty terminal resume confirms exhaustion of that continuation. The cursor is returned atomically through overflow, even when it exceeds the ordinary field budget. Transmission omission never changes clean counts.
 
 ### Native preflight with package-scoped enrichment
 
 `osv_query_batch` sends package tuples and PURLs to `POST /v1/querybatch`, retaining their original positions while following each row's independent `next_page_token` up to `OSV_QUERY_MAX_PAGES`. A token-only page is incomplete. Successful envelopes must contain exactly one valid result per submitted query; malformed or misaligned results become row errors.
 
-Preflight returns only advisory IDs and modification timestamps. Each unique ID is retrieved once per call through `GET /v1/vulns/{id}`. The service shares raw records, then computes each row's brief using its own package matcher, preserving aliases, summary, fixes and scoped severity. This avoids full queries for clean rows and repeated retrieval of shared advisories. A single vulnerable row can require more requests and take longer than a full package query; latency depends on the workload. There is no cross-call cache.
+Preflight returns only advisory IDs and modification timestamps. Each unique ID is retrieved once per call through `GET /v1/vulns/{id}`. The service hydrates the current pages before requesting the next native batch page, then computes each row's brief using its own package matcher. When the deadline interrupts a row, its cursor points to the end of the last contiguous fully hydrated page. Resume through `osv_query_package` with that row's original identifier. Rows without a usable checkpoint report an error. There is no cross-call cache.
 
 A trustworthy in-range indexed HTTP 400 marks the original row failed and resubmits the remainder once. Another rejection, or a non-indexed validation rejection, switches unresolved rows to bounded `/v1/query` workers, preserving accumulated IDs, the current token and remaining page allowance. Exhausted transient preflight failures become errors for the submitted rows without per-package retry amplification. A detail failure fails every dependent row while unrelated rows succeed.
 
-All outbound work respects `OSV_BATCH_CONCURRENCY` and caller cancellation. The entire scan has a 50-second deadline, bounding compounded retry/page waits below the SDK's default 60 seconds. Deadline-expired unfinished rows carry errors; caller cancellation propagates instead of returning partial success.
+All outbound work respects `OSV_BATCH_CONCURRENCY` and caller cancellation.
 
 ### osv_list_ecosystems is static, not an API call
 
@@ -339,9 +342,9 @@ errors: [
 
 ### `osv_query_batch`
 
-**Description:** Query vulnerabilities for multiple packages in one call — the primary tool for dependency audits, SBOM scanning, and lockfile triage. Pass up to 1000 mixed `{name, ecosystem, version}` or `{purl, version?}` entries. Each entry in the response corresponds positionally to the input. Always surfaces `aliases` (CVE IDs) per finding so results can be chained to `nist-nvd-mcp-server` for CVSS scoring.
+**Description:** Query vulnerabilities for a prefix of up to 1,000 packages per call. Each result corresponds positionally to the input. Findings include CVE `aliases` for lookup with `nist-nvd-mcp-server`.
 
-**Input:** `packages` is an array of 1–1000 identifiers using exclusive tuple and PURL input shapes. Tuple rows strip unrelated properties; mixed tuple/PURL identifiers are rejected. Optional `page` selects bounded retrieval. `results[i]` corresponds to `packages[i]`.
+**Input:** `packages` contains 1–5,000 identifiers using tuple or PURL input shapes. The optional `page` selects bounded retrieval. `results[i]` corresponds to `packages[i]` in the processed prefix.
 
 **Output:**
 ```ts
@@ -375,7 +378,7 @@ z.object({
 })
 ```
 
-**Errors:** `invalid_page_path` and `stale_page_revision` describe bounded retrieval failures. A `packages` array outside 1–1000 entries, a blank tuple field, or a blank separate version fails the input schema (`-32602` `invalid_arguments`) before any OSV call. Blank or malformed PURLs become per-row errors.
+**Errors:** `invalid_page_path` and `stale_page_revision` describe bounded retrieval failures. A `packages` array outside the advertised size, a blank tuple field, or a blank separate version fails the input schema (`-32602` `invalid_arguments`) before any OSV call. Blank or malformed PURLs become per-row errors.
 
 Ecosystems are not checked against a local allowlist: OSV.dev is the authority. Indexed validation recovery preserves original row positions, while repeated or non-indexed rejection uses per-package workers. `results[i].error` identifies failed rows and `summary.errorCount` counts them. A shared advisory detail failure affects every dependent row. Malformed native envelopes and exhausted transient failures affect the submitted group; unrelated completed rows remain successful. Cancellation is a tool error, never a completed scan.
 
@@ -494,5 +497,5 @@ z.object({
 - **Severity absent for some records.** Some records (e.g. `PYSEC-2022-190`, many `USN-` notices) carry neither `database_specific.severity` nor any severity entry; `severityLabel` and `severitySource` are null for them. A record whose only entries are `CVSS_V2`, malformed vectors, or unrecognized Ubuntu priorities is null too.
 - **No CVSS score field.** OSV carries CVSS as vector strings only (`"CVSS:3.1/AV:N/AC:L/..."`); the service scores them with `@turingpointde/cvss.js` and reports the result as `severitySource.computedScore`.
 - **Debian urgency and other `ecosystem_specific` severities are not read.** Only `database_specific.severity`, `Ubuntu` entries, and CVSS v3/v4 vectors produce a label.
-- **Pagination on `/v1/query`.** OSV paginates above 1,000 results or when query processing runs long, sometimes returning a bare `next_page_token` with no vulns. Package and commit queries (and each batch row) follow tokens up to `OSV_QUERY_MAX_PAGES` and report `truncated: true` when a token remains — never a clean result.
+- **Pagination on `/v1/query`.** OSV can return a bare `next_page_token` while matching. Queries follow tokens up to `OSV_QUERY_MAX_PAGES` within the operation deadline. A usable unfinished checkpoint is returned as `nextCursor` with `truncated: true`.
 - **`fixedVersions` lists every interval's fix.** A multi-interval advisory (Django `PYSEC-2022-190`: `4.0.4, 3.2.13, 2.2.28`) lists one fix per release line; picking the one that covers the queried version needs per-ecosystem version ordering. `affectedRanges[].events` carries the intervals.
