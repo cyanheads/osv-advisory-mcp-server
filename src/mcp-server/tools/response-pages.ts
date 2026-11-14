@@ -9,7 +9,7 @@ import { validationError } from '@cyanheads/mcp-ts-core/errors';
 import { escapeMarkdownInline, MarkdownBuilder } from '@cyanheads/mcp-ts-core/utils';
 import { advisoryJsonFence, escapeAdvisoryBlock } from './render-escape.js';
 
-/** Combined UTF-8 ceiling, excluding the transport envelope. */
+/** Combined UTF-8 budget for ordinary fields, excluding the transport envelope. */
 export const RESPONSE_BYTES = 24000;
 
 /** Same-tool addressed retrieval; paths are bounded before any upstream work. */
@@ -167,6 +167,12 @@ export function resolvePointer(root: unknown, path: string): unknown {
   return node;
 }
 
+/** A parent page can inline an advisory or row that carries upstream IDs. */
+function containsUpstreamIds(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  return Object.hasOwn(value, 'upstream') || Object.values(value).some(containsUpstreamIds);
+}
+
 /** Render all retrieval arms through the finite advisory boundary. */
 export function renderRetrieval(
   result: Retrieval,
@@ -214,8 +220,6 @@ export function renderRetrieval(
         .join(',')}}`;
     const source = sourcePath(path);
     const encoded = JSON.stringify(value);
-    if (typeof value === 'string' && source?.split('/').includes('upstream'))
-      return encoded.replaceAll('<', '\\u003c').replaceAll('＜', '\\uff1c');
     return typeof value === 'string' && source !== undefined && callerField?.(source)
       ? escapeMarkdownInline(encoded)
       : escapeAdvisoryBlock(encoded);
@@ -226,7 +230,13 @@ export function renderRetrieval(
   for (const key of ['preview', 'overflow', 'page'] as const) {
     const value = result[key];
     if (value === undefined) continue;
-    const exactPage = key === 'page' && result.page?.path.split('/').includes('upstream');
+    const exactPage =
+      key === 'page' &&
+      result.page &&
+      (result.page.path.split('/').includes('upstream') ||
+        result.page.entries?.some(
+          ({ key, value }) => key === 'upstream' || containsUpstreamIds(value),
+        ));
     if (mode === 'lossless' || exactPage) {
       blocks.push({
         type: 'text',

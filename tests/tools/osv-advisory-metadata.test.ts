@@ -60,6 +60,24 @@ it('frames exceptional relationship IDs without changing their literal values', 
   }
 });
 
+it('preserves upstream IDs when package and batch parent pages inline the field', async () => {
+  initOsvApiService();
+  const args = { name: 'openssl', ecosystem: 'Rocky Linux:9', version: '1:3.0.1-41.el9_0' };
+  const upstream = ['CVE-2022-3602', 'CUSTOM-`quoted` &copy;', 'CUSTOM-[id](data:text/plain,id)'];
+  captureOsvQueries([{ id: 'RLSA-2022:7288', upstream }]);
+  for (const reply of [
+    await runToolContract(osvQueryPackage, { ...args, page: { path: '/vulns' } }),
+    await runToolContract(osvQueryBatch, { packages: [args], page: { path: '/results' } }),
+  ]) {
+    const { page } = osvQueryPackage.output.parse(reply.structuredContent);
+    expect(JSON.stringify(page)).toContain(JSON.stringify(upstream));
+    const scan = scanMarkdown(contentText(reply));
+    expect(scan.links).toEqual([]);
+    expect(scan.codeBlocks.map((block) => JSON.parse(block))).toEqual([page]);
+    expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(RESPONSE_BYTES);
+  }
+});
+
 it('preserves affected metadata with arbitrary JSON keys and values on full and page replies', async () => {
   initOsvApiService();
   const id = 'GO-2022-0969';
