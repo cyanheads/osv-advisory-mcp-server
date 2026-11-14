@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.1](changelog/0.5.x/0.5.1.md) — 2026-11-13
+
+Correct package identity and retain advisory metadata and partial findings through retrieval.
+
 ## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-11-11 · ⚠️ Breaking
 
 Resume OSV queries and process the first 1,000 packages in large batch submissions
