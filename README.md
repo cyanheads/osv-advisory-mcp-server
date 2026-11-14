@@ -45,9 +45,10 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 
 ### `osv_query_package` <sub>tool</sub>
 
-- Provide `name`, `ecosystem` (case-sensitive exact match), and `version`, or a `purl` such as `pkg:pypi/jinja2@3.1.4`. A PURL needs exactly one version: embedded in the URL or supplied separately. Versions are exact, never ranges
+- Provide `name`, `ecosystem`, and `version`, or a `purl` such as `pkg:pypi/jinja2@3.1.4`. Known ecosystem bases normalize case (`pypi` → `PyPI`); release and repository suffixes retain their spelling. A PURL needs exactly one version: embedded in the URL or supplied separately. Versions are exact, never ranges
+- Alpine needs a release branch, such as `Alpine:v3.17` or `pkg:apk/alpine/openssl@3.0.8-r0?distro=3.17.3`. Maven needs `groupId:artifactId` (a single `groupId/artifactId` slash normalizes). Composer PURLs map to Packagist; an optional `repository_url` keeps repository scope
 - Unsupported ecosystem-specific constraints fail as `invalid_version`; npm/crates.io exact pins with `=` or `==` normalize to the installed version
-- Each advisory carries CVE `aliases`, `severityLabel` with its `severitySource`, the queried package's `fixedVersions`, `affectedRanges`, and `cweIds`
+- Each advisory carries CVE `aliases`, optional `upstream` IDs, `severityLabel` with its `severitySource`, the queried package's `fixedVersions`, `affectedRanges`, and `cweIds`
 - `truncated: true` indicates more OSV pages remain. Pass `nextCursor` as `cursor` with the same identifier to continue. Repeat that input cursor alongside `page` when retrieving fields from a resumed reply. An empty initial complete result confirms no known vulnerabilities. An empty terminal resume only confirms exhaustion of the continuation
 
 ---
@@ -66,7 +67,7 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 ### `osv_query_commit` <sub>tool</sub>
 
 - One full `commit`: 40 hexadecimal characters for SHA-1 or 64 for SHA-256; either letter case is accepted, abbreviations are rejected
-- Advisories retain record-wide severity, aliases, and GIT ranges with repository URLs and ordered events. No package-specific `fixedVersions` are inferred
+- Advisories retain record-wide severity, aliases, upstream IDs, and GIT ranges with repository URLs and ordered events. Readable advisory sections retain complex values in fenced JSON. No package-specific `fixedVersions` are inferred
 - Pass `nextCursor` as `cursor` with the same commit to continue a truncated result. An empty terminal resume confirms the continuation is exhausted
 
 ---
@@ -74,7 +75,7 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 ### `osv_get_vulnerability` <sub>tool</sub>
 
 - One exact advisory ID from any OSV source (`GHSA-`, `PYSEC-`, `RUSTSEC-`, `GO-`, `DSA-`, `USN-`, `CVE-`, …), matched case-sensitively
-- Full record: `details`, `aliases`, every affected package with its ranges and fixes, `severityLabel`, `cweIds`, and `references`
+- Full record: `details`, `aliases`, optional `upstream` and `related` IDs, every affected package with its ranges and source metadata, `severityLabel`, `cweIds`, and `references`
 - An unknown ID fails as `vulnerability_not_found`; `withdrawn` is set only on retracted advisories
 
 ---
@@ -82,7 +83,7 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 ### `osv_list_ecosystems` <sub>tool</sub>
 
 - No input; returns the `ecosystems` strings the query tools accept, plus a `note` with the date the list was last checked against OSV.dev
-- Strings are case-sensitive exact matches: `PyPI` works, `pypi` fails
+- Returns canonical spellings. Query tools normalize known base names case-insensitively and forward unknown names to OSV.dev; release and repository suffixes remain unchanged
 
 ## Features
 
@@ -97,9 +98,9 @@ OSV-specific:
 Agent-friendly output:
 
 - Truncation is never read as clean — `truncated` flags incomplete OSV pagination, and truncated batch rows are left out of `cleanCount`
-- `aliases` (CVE IDs) on every advisory chain to `nist-nvd-mcp-server` for CVSS base scores and CISA KEV status
-- Responses are capped at 24,000 bytes. Start retrieval by repeating the original input with `page: overflow.page`. Continue the same `path` with `offset: page.nextOffset` and `revision: page.revision` until `nextOffset` is null. Fetch each `entries[].deferred.path` separately at offset zero without a revision; never copy the whole output `page` object into the input
-- Advisory text in `content[]` escapes HTML and unsafe-link constructs while preserving HTTP(S) links; caller coordinates render literally. `structuredContent` keeps every OSV string verbatim
+- CVE-shaped `aliases` and `upstream` IDs chain to `nist-nvd-mcp-server` for CVSS base scores and CISA KEV status. The lists remain separate; a distribution advisory can cover several upstream vulnerabilities
+- Response fields are bounded to 24,000 bytes; upstream cursors are returned intact outside that budget. Start retrieval by repeating the original input with `page: overflow.page`. Continue the same `path` with `offset: page.nextOffset` and `revision: page.revision` until `nextOffset` is null. Fetch each `entries[].deferred.path` separately at offset zero without a revision; never copy the whole output `page` object into the input
+- Advisory text in `content[]` escapes HTML and unsafe-link constructs while preserving HTTP(S) links; caller coordinates render literally. Commit data and affected metadata use reversible JSON where literal rendering needs it. `structuredContent` keeps every OSV string verbatim
 
 ## Getting started
 

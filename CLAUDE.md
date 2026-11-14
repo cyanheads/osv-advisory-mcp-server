@@ -120,7 +120,7 @@ export function getServerConfig() {
 
 > **This server has no required env vars.** OSV.dev is public and keyless. `OSV_REQUEST_TIMEOUT_MS`, `OSV_BATCH_CONCURRENCY`, and `OSV_QUERY_MAX_PAGES` default to 40000 ms, 10, and 10. `OSV_BATCH_SERVE_OVER_CAP` defaults to `true` and accepts only `true` or `false`. Invalid values fail startup.
 
-Package, commit and batch queries have one 50-second operation deadline. A batch cursor advances only through fully hydrated pages. Field retrieval repeats the same input cursor on resumed package and commit queries. Batch submission remainders use `summary.nextInputOffset`, while field pages address only the processed prefix.
+Package, commit and batch queries have one 50-second operation deadline, distinct from caller cancellation. A batch cursor advances only through fully hydrated pages, including during field retrieval. A `/results` page preserves the active row's checkpoint and identifies the first unread row with `page.nextOffset`. Field retrieval repeats the same input cursor on resumed package and commit queries. Batch submission remainders use `summary.nextInputOffset`, while field pages address only the processed prefix.
 
 ### Server instructions
 
@@ -214,6 +214,7 @@ src/
       osv-api-service.ts                # OSV.dev REST API service (fetch, retry, normalization)
       affected-match.ts                 # Which affected[] entries match a queried package (fixedVersions, severity scope)
       package-identifier.ts             # PURL parsing and OSV package coordinates
+      ecosystem-catalog.ts              # Canonical ecosystem names and base-name case normalization
       severity.ts                       # severityLabel / severitySource derivation, CVSS scoring
       types.ts                          # Domain types (OsvVuln, OsvAffected, etc.)
   mcp-server/

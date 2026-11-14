@@ -11,8 +11,12 @@ import {
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
 import { createCounter, escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
-import { callerCode, escapeAdvisoryInline } from '@/mcp-server/tools/render-escape.js';
-import { getOsvApiService } from '@/services/osv-api/osv-api-service.js';
+import {
+  callerCode,
+  escapeAdvisoryInline,
+  renderAdvisoryIds,
+} from '@/mcp-server/tools/render-escape.js';
+import { getOsvApiService, startQueryDeadline } from '@/services/osv-api/osv-api-service.js';
 import { cursorBlock, NextCursor } from '../continuation-fields.js';
 import { PackagePurlInput, PackageTupleInput } from '../package-input.js';
 import {
@@ -27,6 +31,7 @@ import {
   resolvePointer,
   wireMeasure,
 } from '../response-pages.js';
+import { UpstreamIds } from '../upstream-ids.js';
 
 /** Severity ordering for worstSeverity derivation. */
 const SEVERITY_RANK: Record<string, number> = {
@@ -86,6 +91,7 @@ const BatchVulnSchema = z.object({
     .describe(
       'CVE IDs and other aliases. Accepted by nist-nvd-mcp-server for CVSS scores and CISA KEV status.',
     ),
+  upstream: UpstreamIds,
   severityLabel: z
     .string()
     .nullable()
@@ -100,15 +106,13 @@ const BatchVulnSchema = z.object({
 });
 
 const PerPackageResultSchema = z.object({
-  name: z.string().describe('Package name from input.'),
-  ecosystem: z.string().describe('Ecosystem from input.'),
-  version: z.string().describe('Version from input.'),
+  name: z.string().describe('Effective package name when the identifier resolves.'),
+  ecosystem: z.string().describe('Effective ecosystem when the identifier resolves.'),
+  version: z.string().describe('Effective version when the identifier resolves.'),
   purl: z
     .string()
     .optional()
-    .describe(
-      'Original PURL when supplied; name, ecosystem and version show its effective coordinate on success.',
-    ),
+    .describe('Original PURL when supplied, including when the identifier cannot be resolved.'),
   vulnerable: z.boolean().describe('True if any vulnerabilities were found.'),
   nextCursor: RowNextCursor,
   truncated: z
@@ -247,6 +251,9 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
         const fix =
           vuln.fixedVersions.length > 0 ? ` → fix: ${vuln.fixedVersions.map(esc).join(', ')}` : '';
         lines.push(`- \`${esc(vuln.id)}\`${sev}${aliases}${fix}`);
+        if (vuln.upstream !== undefined) {
+          lines.push(`  ${renderAdvisoryIds('Upstream', vuln.upstream).replaceAll('\n', '\n  ')}`);
+        }
         if (vuln.summary) {
           lines.push(`  <advisory_summary>${esc(vuln.summary)}</advisory_summary>`);
         }
@@ -306,7 +313,7 @@ export function createOsvQueryBatch(serveOverCap: boolean) {
       `SBOM scanning, and lockfile triage. Submit up to ${maxSubmitted} mixed {name, ecosystem, version} tuples and {purl, version?} identifiers, with exactly one embedded or separate version per PURL. The first ${BATCH_PROCESS_LIMIT} entries are processed. Follow summary.nextInputOffset to submit the remaining slice. Pass a row's nextCursor as cursor to osv_query_package with that row's identifier. ` +
       'Each entry in the response corresponds positionally to the input. ' +
       'Each finding includes CVE aliases for chaining to nist-nvd-mcp-server for CVSS scoring. Large replies retain the complete summary. For overflow, repeat the original packages array with page: overflow.page. Continue the same path with offset: page.nextOffset and revision: page.revision until nextOffset is null. Retrieve each entries[].deferred.path separately at offset zero without a revision. Do not pass the output page object as input. /results/17 selects original input row 17, even when earlier rows failed. Pages are fresh lookups and do not recompute the initial summary; restart a changed node without a revision. Transmission overflow and upstream truncated are separate; neither confirms clean.',
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
 
     input: z.object({
       page: PageInput.optional().describe(
@@ -371,9 +378,6 @@ export function createOsvQueryBatch(serveOverCap: boolean) {
           : `Submit packages.slice(${nextInputOffset}) in a new call and add ${nextInputOffset} to its row indices.`;
 
       const service = getOsvApiService();
-      const rowContext = input.page
-        ? { ...ctx, signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(50000)]) }
-        : ctx;
       const project = (r: Awaited<ReturnType<typeof service.queryBatch>>[number]) => ({
         name: r.name,
         ecosystem: r.ecosystem,
@@ -386,24 +390,31 @@ export function createOsvQueryBatch(serveOverCap: boolean) {
         vulnCount: r.vulns.length,
         vulns: r.vulns,
       });
-      const fetchRow = async (index: number) => {
+      const fetchRow = async (index: number, deadline?: ReturnType<typeof startQueryDeadline>) => {
         const pkg = packages[index];
         if (!pkg)
           throw validationError('Unknown original batch row index.', {
             reason: 'invalid_page_path',
           });
-        const [row] = await service.queryBatch([pkg], rowContext);
+        const [row] = await service.queryBatch([pkg], ctx, deadline);
         if (!row) throw serviceUnavailable('OSV batch service omitted its requested row.');
         return project(row);
       };
-      if (input.page?.path === '/results')
-        return pageRows(
-          packages.length,
-          input.page,
-          nodeRevision(input.packages),
-          fetchRow,
-          measureBatch,
-        );
+      if (input.page?.path === '/results') {
+        const deadline = startQueryDeadline(ctx);
+        try {
+          return await pageRows(
+            packages.length,
+            input.page,
+            nodeRevision(input.packages),
+            (index) => fetchRow(index, deadline),
+            measureBatch,
+            deadline.expired,
+          );
+        } finally {
+          deadline.stop();
+        }
+      }
       if (input.page?.path.startsWith('/results/')) {
         const match = /^\/results\/(0|[1-9]\d*)(\/.*)?$/.exec(input.page.path);
         const index = match ? Number(match[1]) : -1;

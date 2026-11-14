@@ -278,11 +278,11 @@ describe('osvQueryPackage', () => {
     const ctx = createMockContext({ errors: osvQueryPackage.errors });
     const input = osvQueryPackage.input.parse({
       name: 'lodash',
-      ecosystem: 'NPM',
+      ecosystem: 'Unlisted',
       version: '4.17.1',
     });
     await expect(fullHandler(input, ctx)).rejects.toMatchObject({
-      message: 'Ecosystem "NPM" is not recognized by OSV.',
+      message: 'Ecosystem "Unlisted" is not recognized by OSV.',
       data: { reason: 'invalid_ecosystem' },
     });
   });
@@ -781,7 +781,11 @@ describe('osvQueryPackage over a real service and stubbed OSV HTTP', () => {
           version: '1.0.0',
         });
         const structured = result.structuredContent as { vulns: Array<Record<string, unknown>> };
-        const { fixedVersions: _fixedVersions, ...vuln } = structured.vulns[0]!;
+        const {
+          fixedVersions: _fixedVersions,
+          upstream: _upstream,
+          ...vuln
+        } = structured.vulns[0]!;
         expect({ ...structured, vulns: [vuln] }).toMatchSnapshot();
       },
     );

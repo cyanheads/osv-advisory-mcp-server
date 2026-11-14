@@ -35,6 +35,29 @@ import type {
 
 const OSV_BASE_URL = 'https://api.osv.dev';
 
+/** Recovery for a package query whose ecosystem OSV does not recognize. */
+export const INVALID_ECOSYSTEM_RECOVERY =
+  'Call osv_list_ecosystems to see valid ecosystem strings, then retry with the correct value.';
+
+/** Match the package tool's error message before the framework attaches recovery. */
+export function invalidEcosystemMessage(ecosystem: string): string {
+  return `Ecosystem "${ecosystem}" is not recognized by OSV.`;
+}
+
+function batchQueryRejection(
+  ecosystem: string,
+  detail: string | undefined,
+  original = detail,
+): string {
+  if (
+    detail === 'invalid ecosystem' ||
+    detail === 'rpc error: code = InvalidArgument desc = invalid ecosystem'
+  ) {
+    return `${invalidEcosystemMessage(ecosystem)} ${INVALID_ECOSYSTEM_RECOVERY}`;
+  }
+  return original ?? 'Invalid package query.';
+}
+
 /** Default maximum concurrent outbound requests in {@link OsvApiService.queryBatch}. */
 const DEFAULT_BATCH_CONCURRENCY = 10;
 
@@ -54,7 +77,15 @@ const BASE_DELAY_MS = 500;
 /** Bound all query stages below the SDK's default 60-second request deadline. */
 const QUERY_DEADLINE_MS = 50_000;
 
-function startQueryDeadline(ctx: Context) {
+interface QueryDeadline {
+  ctx: Context;
+  expired: () => boolean;
+  reason: DOMException;
+  stop: () => void;
+}
+
+/** Start the total query budget separately from caller cancellation. The owner stops its timer. */
+export function startQueryDeadline(ctx: Context): QueryDeadline {
   const deadline = new AbortController();
   const reason = new DOMException('OSV query exceeded its 50-second deadline.', 'TimeoutError');
   const timer = setTimeout(() => deadline.abort(reason), QUERY_DEADLINE_MS);
@@ -189,6 +220,8 @@ function normalizeVuln(
     ecosystem: a.package?.ecosystem ?? '',
     ...(a.package?.purl ? { purl: a.package.purl } : {}),
     ...(a.severity?.length ? { severity: toSeverityEntries(a.severity) } : {}),
+    ...(a.ecosystem_specific === undefined ? {} : { ecosystem_specific: a.ecosystem_specific }),
+    ...(a.database_specific === undefined ? {} : { database_specific: a.database_specific }),
     versions: a.versions ?? [],
     ranges: (a.ranges ?? []).map((r) => {
       const out: {
@@ -219,6 +252,8 @@ function normalizeVuln(
     summary: raw.summary ?? '',
     details: raw.details ?? '',
     aliases: raw.aliases ?? [],
+    ...(raw.upstream === undefined ? {} : { upstream: raw.upstream }),
+    ...(raw.related === undefined ? {} : { related: raw.related }),
     published: raw.published ?? '',
     modified: raw.modified ?? '',
     severity,
@@ -253,6 +288,7 @@ function toBrief(vuln: OsvPackageVulnerability): BatchVulnBrief {
     id: vuln.id,
     summary: vuln.summary,
     aliases: vuln.aliases,
+    ...(vuln.upstream === undefined ? {} : { upstream: vuln.upstream }),
     severityLabel: vuln.severityLabel,
     fixedVersions: vuln.fixedVersions,
   };
@@ -512,6 +548,7 @@ export class OsvApiService {
   async queryBatch(
     packages: PackageIdentifier[],
     ctx: Context,
+    operationDeadline?: QueryDeadline,
   ): Promise<
     Array<
       {
@@ -523,7 +560,7 @@ export class OsvApiService {
       } & QueryFindings<BatchVulnBrief>
     >
   > {
-    const deadline = startQueryDeadline(ctx);
+    const deadline = operationDeadline ?? startQueryDeadline(ctx);
     const batchCtx = deadline.ctx;
     const { signal } = batchCtx;
     const rows = packages.map((input) => {
@@ -580,7 +617,7 @@ export class OsvApiService {
               batchCtx,
             );
             if (status === 400) {
-              row.error = (data as OsvApiError).message ?? 'Invalid package query.';
+              row.error = batchQueryRejection(row.pkg.ecosystem, (data as OsvApiError).message);
               return;
             }
             if (status !== 200)
@@ -649,9 +686,10 @@ export class OsvApiService {
             const error = data as OsvApiError;
             const indexMatch = /^error in query at index (\d+):/.exec(error.message ?? '');
             const index = indexMatch ? Number(indexMatch[1]) : -1;
-            if (index >= 0 && index < pending.length && !recoveredIndex) {
-              // biome-ignore lint/style/noNonNullAssertion: OSV index was checked against submitted cardinality
-              pending[index]!.error = error.message;
+            const row = pending[index];
+            if (indexMatch && row && !recoveredIndex) {
+              const detail = error.message.slice(indexMatch[0].length).trimStart();
+              row.error = batchQueryRejection(row.pkg.ecosystem, detail, error.message);
               pending = pending.filter((_, i) => i !== index);
               recoveredIndex = true;
               continue;
@@ -723,7 +761,7 @@ export class OsvApiService {
         }
       });
     } finally {
-      deadline.stop();
+      if (operationDeadline === undefined) deadline.stop();
     }
   }
 }

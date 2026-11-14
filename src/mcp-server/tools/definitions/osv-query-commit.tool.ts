@@ -4,6 +4,7 @@
  */
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import { getOsvApiService } from '@/services/osv-api/osv-api-service.js';
 import {
   CONTINUATION_EXHAUSTED_NOTICE,
@@ -12,7 +13,7 @@ import {
   cursorBlock,
   NextCursor,
 } from '../continuation-fields.js';
-import { escapeAdvisoryBlock } from '../render-escape.js';
+import { advisoryJsonFence } from '../render-escape.js';
 import {
   boundResponse,
   PageInput,
@@ -57,37 +58,86 @@ const CommitFullOutput = z.object({
 });
 const CommitOutput = CommitFullOutput.partial().extend(RetrievalOutput.shape);
 
+/** Use literal Markdown for simple scalars and JSON for values needing exact escapes. */
+function renderAdvisory({
+  id,
+  severityLabel,
+  summary,
+  aliases,
+  upstream,
+  published,
+  modified,
+  cweIds,
+  ...details
+}: z.infer<typeof CommitAdvisory>) {
+  const exact: Record<string, unknown> = {};
+  const scalar = (name: string, value: string | null): string => {
+    if (value === null) return 'null';
+    if (
+      value.includes('\r') ||
+      value.includes('\n') ||
+      value.includes('\0') ||
+      value.includes('<') ||
+      value.includes('＜') ||
+      value.includes(' — ') ||
+      value.includes(' | ') ||
+      value === 'null' ||
+      value === '""' ||
+      value === '(see advisory data)'
+    ) {
+      exact[name] = value;
+      return '(see advisory data)';
+    }
+    return value === '' ? '""' : escapeMarkdownInline(value);
+  };
+  const list = (name: string, values: string[]) => {
+    if (values.some((value) => value.includes(',') || value === '' || value === '[]')) {
+      exact[name] = values;
+      return '(see advisory data)';
+    }
+    const labels = values.map((value) => scalar(name, value));
+    if (Object.hasOwn(exact, name)) {
+      exact[name] = values;
+      return '(see advisory data)';
+    }
+    return labels.join(', ') || '[]';
+  };
+  const lines = [
+    `## ${scalar('id', id)} — ${scalar('severityLabel', severityLabel)}`,
+    `Summary: ${scalar('summary', summary)}`,
+    `Aliases: ${list('aliases', aliases)}`,
+    ...(upstream === undefined ? [] : [`Upstream: ${list('upstream', upstream)}`]),
+    `CWE: ${list('cweIds', cweIds)}`,
+    `Published: ${scalar('published', published)} | Modified: ${scalar('modified', modified)}`,
+  ];
+  return `${lines.join('\n\n')}\n\nAdvisory data:\n\n${advisoryJsonFence({ ...details, ...exact })}`;
+}
+
 function renderCommit(result: z.infer<typeof CommitOutput>): Array<{ type: 'text'; text: string }> {
-  const retrieval = renderRetrieval(result);
+  const retrieval = renderRetrieval(result, 'lossless');
   if (result.nextCursor !== undefined) retrieval.unshift(cursorBlock(result.nextCursor));
   if (result.truncated && result.vulns === undefined)
     retrieval.unshift({ type: 'text', text: 'truncated: true' });
   if (result.continuationExhausted && result.vulns === undefined)
-    retrieval.unshift({ type: 'text', text: CONTINUATION_EXHAUSTED_NOTICE });
+    retrieval.unshift({ type: 'text', text: 'continuationExhausted: true' });
   if (result.vulns === undefined || result.queryMeta === undefined) return retrieval;
-  const { nextCursor: _nextCursor, ...full } = CommitFullOutput.parse(result);
-  const notice = full.truncated
-    ? 'Results are INCOMPLETE; more OSV pages remain. This is not confirmed clean.'
-    : full.vulns.length === 0
-      ? full.continuationExhausted
-        ? CONTINUATION_EXHAUSTED_NOTICE
-        : 'No known vulnerabilities found.'
-      : 'Commit-matching advisories:';
+  const { nextCursor: _nextCursor, vulns, ...state } = CommitFullOutput.parse(result);
+  const advisories =
+    vulns.length === 0 ? advisoryJsonFence(vulns) : vulns.map(renderAdvisory).join('\n\n');
   return [
     {
       type: 'text',
-      text: `${notice}\n<advisory_text>\n${escapeAdvisoryBlock(JSON.stringify(full, null, 2))}\n</advisory_text>`,
+      text: `Commit query:\n\n${advisoryJsonFence(state)}\n\nCommit-matching advisories (vulns):\n<advisory_text>\n\n${advisories}\n</advisory_text>`,
     },
     ...retrieval,
   ];
 }
-const measureCommit = wireMeasure((value) => renderCommit(CommitOutput.parse(value)));
 
 /** Look up a complete SHA-1 or SHA-256 Git commit without inventing a package identity. */
 export const osvQueryCommit = tool('osv_query_commit', {
   description:
     'Query known vulnerabilities for one full Git commit hash (40 hexadecimal SHA-1 or 64 hexadecimal SHA-256 characters, case-insensitive). Abbreviated hashes are rejected. Returns advisory summaries, record-wide severity and GIT ranges with repositories and ordered fix events; use osv_get_vulnerability for full records. No package-specific fixedVersions are inferred. For overflow, repeat the original input with page: overflow.page. Continue the same path with offset: page.nextOffset and revision: page.revision until nextOffset is null. Retrieve entries[].deferred.path separately at offset zero without a revision. Do not pass the output page object as input. Pages are fresh lookups; restart a changed node without a revision. Transmission overflow and upstream truncated are separate; neither confirms clean.',
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
   input: z.object({
     commit: z
       .string()
@@ -102,6 +152,12 @@ export const osvQueryCommit = tool('osv_query_commit', {
     cursor: CursorInput,
   }),
   output: CommitOutput,
+  enrichment: {
+    notice: z
+      .string()
+      .optional()
+      .describe('Clean, upstream-incomplete, or exhausted continuation outcome.'),
+  },
   errors: [
     {
       reason: 'invalid_cursor',
@@ -153,6 +209,18 @@ export const osvQueryCommit = tool('osv_query_commit', {
       truncated: result.truncated,
       queryMeta: { commit: input.commit, vulnCount: result.vulns.length },
     };
+    const notice = result.truncated
+      ? 'Results are INCOMPLETE; more OSV pages remain. This is not confirmed clean.'
+      : exhausted
+        ? CONTINUATION_EXHAUSTED_NOTICE
+        : input.page === undefined && result.vulns.length === 0
+          ? 'No known vulnerabilities found.'
+          : undefined;
+    const measureCommit = wireMeasure(
+      (value) => renderCommit(CommitOutput.parse(value)),
+      notice === undefined ? {} : { notice },
+    );
+    if (notice !== undefined) ctx.enrich.notice(notice);
     if (input.page) return pageNode(full, input.page, measureCommit, retained);
     return boundResponse(full, measureCommit, undefined, retained);
   },

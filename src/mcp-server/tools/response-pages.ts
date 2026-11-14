@@ -7,7 +7,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from '@cyanheads/mcp-ts-core';
 import { validationError } from '@cyanheads/mcp-ts-core/errors';
 import { escapeMarkdownInline, MarkdownBuilder } from '@cyanheads/mcp-ts-core/utils';
-import { escapeAdvisoryBlock } from './render-escape.js';
+import { advisoryJsonFence, escapeAdvisoryBlock } from './render-escape.js';
 
 /** Combined UTF-8 ceiling, excluding the transport envelope. */
 export const RESPONSE_BYTES = 24000;
@@ -170,8 +170,9 @@ export function resolvePointer(root: unknown, path: string): unknown {
 /** Render all retrieval arms through the finite advisory boundary. */
 export function renderRetrieval(
   result: Retrieval,
-  callerField?: (path: string) => boolean,
+  mode?: 'lossless' | ((path: string) => boolean),
 ): Content {
+  const callerField = typeof mode === 'function' ? mode : undefined;
   /** Map serialized retrieval locations back to their original normalized source fields. */
   const sourcePath = (path: string[]): string | undefined => {
     if (path[0] === 'preview') {
@@ -211,8 +212,10 @@ export function renderRetrieval(
             `${escapeAdvisoryBlock(JSON.stringify(key))}:${json(child, [...path, key])}`,
         )
         .join(',')}}`;
-    const encoded = JSON.stringify(value);
     const source = sourcePath(path);
+    const encoded = JSON.stringify(value);
+    if (typeof value === 'string' && source?.split('/').includes('upstream'))
+      return encoded.replaceAll('<', '\\u003c').replaceAll('＜', '\\uff1c');
     return typeof value === 'string' && source !== undefined && callerField?.(source)
       ? escapeMarkdownInline(encoded)
       : escapeAdvisoryBlock(encoded);
@@ -221,21 +224,37 @@ export function renderRetrieval(
     callerField ? json(value, [key]) : escapeAdvisoryBlock(JSON.stringify(value));
   const blocks: Content = [];
   for (const key of ['preview', 'overflow', 'page'] as const) {
-    if (key === 'preview' && result.preview && Array.isArray(result.preview.vulns)) {
-      const { vulns, ...metadata } = result.preview;
-      const rows = vulns.map((value) =>
-        value !== null && typeof value === 'object'
-          ? JSON.stringify(Object.values(value))
-          : JSON.stringify(value),
-      );
+    const value = result[key];
+    if (value === undefined) continue;
+    const exactPage = key === 'page' && result.page?.path.split('/').includes('upstream');
+    if (mode === 'lossless' || exactPage) {
       blocks.push({
         type: 'text',
-        text: `### preview\n<advisory_text>\n${renderJson(metadata, 'preview')}\nAdvisories: id | aliases | severityLabel | fixedVersions\n${escapeAdvisoryBlock(rows.join('\n'))}\n</advisory_text>`,
+        text: `### ${key}\n<advisory_text>\n\n${advisoryJsonFence(value)}\n</advisory_text>`,
       });
-    } else if (result[key] !== undefined)
+    } else if (key === 'preview' && result.preview && Array.isArray(result.preview.vulns)) {
+      const { vulns, ...metadata } = result.preview;
+      const columns = ['id', 'aliases', 'severityLabel', 'fixedVersions'] as const;
+      const rows = vulns.map(({ id, aliases, severityLabel, fixedVersions, upstream }) => [
+        id,
+        aliases,
+        severityLabel,
+        fixedVersions,
+        ...(upstream === undefined ? [] : [upstream]),
+      ]);
+      const hasUpstream = vulns.some((vuln) => vuln.upstream !== undefined);
+      const header = `${columns.join(' | ')}${hasUpstream ? ' | upstream (when present)' : ''}`;
+      const data = hasUpstream
+        ? `\n${advisoryJsonFence(rows)}`
+        : escapeAdvisoryBlock(rows.map((row) => JSON.stringify(row)).join('\n'));
       blocks.push({
         type: 'text',
-        text: `### ${key}\n<advisory_text>\n${renderJson(result[key], key)}\n</advisory_text>`,
+        text: `### preview\n<advisory_text>\n${renderJson(metadata, 'preview')}\nAdvisories: ${header}\n${data}\n</advisory_text>`,
+      });
+    } else
+      blocks.push({
+        type: 'text',
+        text: `### ${key}\n<advisory_text>\n${renderJson(value, key)}\n</advisory_text>`,
       });
   }
   return blocks;
@@ -404,6 +423,7 @@ export async function pageRows(
   revision: string,
   fetchRow: (index: number) => Promise<unknown>,
   measure: Measure,
+  deadlineExpired: () => boolean,
 ): Promise<Retrieval> {
   if (request.revision !== undefined && request.revision !== revision)
     throw validationError('The batch input order changed. Restart without revision.', {
@@ -423,6 +443,10 @@ export async function pageRows(
   };
   const result = { page };
   for (let index = request.offset; index < total; index++) {
+    if (deadlineExpired()) {
+      page.nextOffset = index;
+      break;
+    }
     const value = await fetchRow(index);
     const entry: NonNullable<typeof page.entries>[number] = { key: String(index), value };
     entries.push(entry);

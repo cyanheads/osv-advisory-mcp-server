@@ -5,11 +5,12 @@
 
 import { z } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createOsvQueryBatch,
   osvQueryBatch,
 } from '@/mcp-server/tools/definitions/osv-query-batch.tool.js';
+import { osvQueryPackage } from '@/mcp-server/tools/definitions/osv-query-package.tool.js';
 
 /** Assert the full branch before retaining legacy semantic assertions. */
 async function fullHandler(...args: Parameters<typeof osvQueryBatch.handler>) {
@@ -865,6 +866,167 @@ describe('osvQueryBatch over a real service and stubbed OSV HTTP', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     osvApiModule.initOsvApiService({ timeoutMs: 5000 });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  describe('field retrieval operation deadline', () => {
+    const packages = ['early', 'checkpoint', 'unread'].map((name) => ({
+      name,
+      ecosystem: 'npm',
+      version: '1.0.0',
+    }));
+    const first = { id: 'GHSA-first', summary: 'first advisory', affected: [] };
+    const second = { id: 'GHSA-second', summary: 'second advisory', affected: [] };
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      // Route native timeout signals through the same fake clock as the service's timer.
+      vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(new DOMException('Field deadline', 'TimeoutError')), ms);
+        return controller.signal;
+      });
+      osvApiModule.initOsvApiService({ timeoutMs: 60_000 });
+    });
+
+    function stubDeadlineFetch(checkpoint = true) {
+      const stalled = Promise.withResolvers<void>();
+      const queries: Array<{ name: string; token?: string }> = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string, init: RequestInit) => {
+          const path = new URL(url).pathname;
+          if (path === '/v1/query' || path === '/v1/querybatch') {
+            const body = JSON.parse(String(init.body));
+            const query = path === '/v1/query' ? body : body.queries[0];
+            const name = query.package.name;
+            const token = query.page_token;
+            queries.push({ name, token });
+            if (path === '/v1/query') return Response.json({ vulns: [second] });
+            if (name === 'early') {
+              return new Promise<Response>((resolve) =>
+                setTimeout(() => resolve(Response.json({ results: [{}] })), 20_000),
+              );
+            }
+            expect(name).toBe('checkpoint');
+            return Response.json({
+              results: [
+                token || !checkpoint
+                  ? { vulns: [{ id: second.id }] }
+                  : { vulns: [{ id: first.id }], next_page_token: 'second-page' },
+              ],
+            });
+          }
+          if (path.endsWith(first.id)) return Response.json(first);
+          expect(path).toBe(`/v1/vulns/${second.id}`);
+          return new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+              once: true,
+            });
+            stalled.resolve();
+          });
+        }),
+      );
+      return { stalled: stalled.promise, queries };
+    }
+
+    it('keeps completed and checkpoint rows and resumes the collection at the unread row', async () => {
+      const { stalled, queries } = stubDeadlineFetch();
+      const pending = runToolContract(osvQueryBatch, { packages, page: { path: '/results' } });
+      await vi.advanceTimersByTimeAsync(20_000);
+      await stalled;
+      let settled = false;
+      const completed = pending.then((reply) => {
+        settled = true;
+        return reply;
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(settled).toBe(true);
+      const reply = await completed;
+      expect(reply.isError).not.toBe(true);
+      const { page } = osvQueryBatch.output.parse(reply.structuredContent);
+      expect(page).toMatchObject({
+        nextOffset: 2,
+        entries: [
+          { key: '0', value: { name: 'early', truncated: false, error: null } },
+          {
+            key: '1',
+            value: {
+              nextCursor: expect.any(String),
+              truncated: true,
+              error: null,
+              vulns: [{ id: first.id }],
+            },
+          },
+        ],
+      });
+      expect(contentText(reply)).toContain(first.id);
+      expect(contentText(reply)).toContain('nextOffset');
+      expect(queries.map(({ name }) => name)).toEqual(['early', 'checkpoint', 'checkpoint']);
+    });
+
+    it('retains the cursor from a nested page and resumes at the next unexposed OSV page', async () => {
+      const { stalled, queries } = stubDeadlineFetch();
+      const pending = runToolContract(osvQueryBatch, {
+        packages,
+        page: { path: '/results/1/vulns/0/id' },
+      });
+      await stalled;
+      await vi.advanceTimersByTimeAsync(50_000);
+      const reply = await pending;
+      expect(reply.isError).not.toBe(true);
+      const { page, nextCursor } = osvQueryBatch.output.parse(reply.structuredContent);
+      expect(page?.text).toBe(first.id);
+      expect(nextCursor).toEqual(expect.any(String));
+      expect(contentText(reply)).toContain(first.id);
+      expect(contentText(reply)).toContain(nextCursor);
+      const resumed = await runToolContract(osvQueryPackage, {
+        ...packages[1],
+        cursor: nextCursor,
+      });
+      expect(resumed.structuredContent).toMatchObject({ vulns: [{ id: second.id }] });
+      expect(contentText(resumed)).toContain(second.id);
+      expect(queries).toEqual([
+        { name: 'checkpoint' },
+        { name: 'checkpoint', token: 'second-page' },
+        { name: 'checkpoint', token: 'second-page' },
+      ]);
+    });
+
+    it('retains a row error if the deadline expires before any page is fully hydrated', async () => {
+      const { stalled } = stubDeadlineFetch(false);
+      const pending = runToolContract(osvQueryBatch, {
+        packages,
+        page: { path: '/results/1/error' },
+      });
+      await stalled;
+      await vi.advanceTimersByTimeAsync(50_000);
+      const reply = await pending;
+      const { page, nextCursor } = osvQueryBatch.output.parse(reply.structuredContent);
+      expect(page?.text).toContain('50-second deadline');
+      expect(contentText(reply)).toContain('50-second deadline');
+      expect(nextCursor).toBeUndefined();
+    });
+
+    it('propagates genuine caller cancellation during hydration', async () => {
+      const { stalled } = stubDeadlineFetch();
+      const caller = new AbortController();
+      const reason = new DOMException('Cancelled by caller', 'AbortError');
+      const pending = osvQueryBatch.handler(
+        osvQueryBatch.input.parse({ packages, page: { path: '/results' } }),
+        createMockContext({ signal: caller.signal, errors: osvQueryBatch.errors }),
+      );
+      const cancelled = expect(pending).rejects.toBe(reason);
+      await vi.advanceTimersByTimeAsync(20_000);
+      await stalled;
+      caller.abort(reason);
+      await cancelled;
+    });
   });
 
   it('limits real upstream requests to selected and emitted row-page indices', async () => {

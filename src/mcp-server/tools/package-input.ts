@@ -15,7 +15,9 @@ export const PackageTupleInput = z.object({
     .string()
     .trim()
     .regex(/\S/, 'Ecosystem must not be blank — see osv_list_ecosystems.')
-    .describe('Case-sensitive ecosystem identifier from osv_list_ecosystems.'),
+    .describe(
+      'Ecosystem identifier from osv_list_ecosystems. Known base names are case-insensitive. Preserve suffix spelling.',
+    ),
   version: z
     .string()
     .trim()

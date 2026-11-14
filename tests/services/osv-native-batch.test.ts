@@ -221,7 +221,9 @@ describe('native batch', () => {
     );
     expect(rows.map((row) => row.name)).toEqual(['a', 'b', 'clean']);
     expect(rows[0]?.vulns[0]?.id).toBe('shared');
-    expect(rows[1]?.error).toContain('index 1');
+    expect(rows[1]?.error).toBe(
+      'Ecosystem "npm" is not recognized by OSV. Call osv_list_ecosystems to see valid ecosystem strings, then retry with the correct value.',
+    );
     expect(rows[2]?.error).toBeNull();
     expect(
       JSON.parse(fetch.mock.calls[1]![1].body).queries.map(
@@ -299,7 +301,9 @@ describe('native batch', () => {
       },
     ]);
     expect(rows[0]).toMatchObject({ truncated: true, error: null, vulns: [{ id: 'shared' }] });
-    expect(rows[1]?.error).toContain('index 1');
+    expect(rows[1]?.error).toBe(
+      'Ecosystem "npm" is not recognized by OSV. Call osv_list_ecosystems to see valid ecosystem strings, then retry with the correct value.',
+    );
     expect(rows[2]).toMatchObject({ truncated: true, error: null, vulns: [] });
   });
 

@@ -43,6 +43,8 @@ export interface RawOsvPackage {
 
 /** Raw affected entry. */
 export interface RawOsvAffected {
+  database_specific?: Record<string, unknown>;
+  ecosystem_specific?: Record<string, unknown>;
   package?: RawOsvPackage;
   ranges?: RawOsvRange[];
   /** Package-level severity — set only when the record-level `severity` is not. */
@@ -73,9 +75,11 @@ export interface RawOsvVulnerability {
   modified?: string;
   published?: string;
   references?: RawOsvReference[];
+  related?: string[];
   schema_version?: string;
   severity?: RawOsvSeverity[];
   summary?: string;
+  upstream?: string[];
   /** ISO 8601 timestamp present only on withdrawn advisories. */
   withdrawn?: string;
 }
@@ -164,6 +168,8 @@ export interface OsvAffectedRange {
 /** Normalized vulnerability record (full). */
 export interface OsvVulnerability {
   affected: Array<{
+    database_specific?: Record<string, unknown>;
+    ecosystem_specific?: Record<string, unknown>;
     packageName: string;
     ecosystem: string;
     purl?: string;
@@ -191,12 +197,14 @@ export interface OsvVulnerability {
   modified: string;
   published: string;
   references: Array<{ type: string; url: string }>;
+  related?: string[];
   schemaVersion: string;
   severity: OsvSeverityEntry[];
   severityLabel: string | null;
   /** The entry `severityLabel` was derived from; null exactly when the label is. */
   severitySource: OsvSeveritySource | null;
   summary: string;
+  upstream?: string[];
   /** ISO 8601 timestamp present only on withdrawn advisories. */
   withdrawn?: string;
 }
@@ -219,4 +227,5 @@ export interface BatchVulnBrief {
   id: string;
   severityLabel: string | null;
   summary: string;
+  upstream?: string[];
 }

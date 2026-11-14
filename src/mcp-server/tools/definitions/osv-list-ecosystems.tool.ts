@@ -4,80 +4,11 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-
-/**
- * Supported ecosystem strings, last verified 2026-10-31. The rule: every member of the
- * `$defs.ecosystemName` enum in the OSV schema's `validation/schema.json` that live
- * `POST /v1/query` accepts, plus `GIT` — 53 named + `GIT` = 54. Schema membership alone
- * is not enough: a member OSV.dev still rejects is withheld until it is accepted. `GIT` is valid through
- * the `$defs.ecosystemWithSuffix` pattern, not the named enum. `GSD` is excluded: it is
- * a vulnerability-ID prefix (`GSD-2020-1000`, `$defs.prefix`), not an ecosystem.
- * `bun run check:ecosystems` reports drift against the live schema and API.
- * Strings are case-sensitive exact matches required by the OSV API.
- * Source: https://github.com/ossf/osv-schema/blob/main/validation/schema.json
- *         (rendered: https://ossf.github.io/osv-schema/#affectedpackageecosystem-field)
- */
-export const SUPPORTED_ECOSYSTEMS: readonly string[] = [
-  'AlmaLinux',
-  'Alpaquita',
-  'Alpine',
-  'Android',
-  'Azure Linux',
-  'BellSoft Hardened Containers',
-  'Bioconductor',
-  'Bitnami',
-  'Chainguard',
-  'CleanStart',
-  'ConanCenter',
-  'CRAN',
-  'crates.io',
-  'Debian',
-  'Docker Hardened Images',
-  'Echo',
-  'FreeBSD',
-  'GHC',
-  'GitHub Actions',
-  'Go',
-  'Hackage',
-  'Hex',
-  'Homebrew',
-  'Julia',
-  'Kubernetes',
-  'Linux',
-  'Mageia',
-  'Maven',
-  'MinimOS',
-  'npm',
-  'NuGet',
-  'opam',
-  'openEuler',
-  'openSUSE',
-  'OSS-Fuzz',
-  'Packagist',
-  'Photon OS',
-  'Pub',
-  'PyPI',
-  'Raspberry Pi OS',
-  'Red Hat',
-  'Red Hat Lightwell',
-  'Rocky Linux',
-  'Root',
-  'RubyGems',
-  'SUSE',
-  'SwiftURL',
-  'TuxCare',
-  'Ubuntu',
-  'vcpkg',
-  'VSCode',
-  'Wolfi',
-  'WordPress',
-  // Accepted via the ecosystemWithSuffix pattern, not the named ecosystemName enum.
-  'GIT',
-] as const;
+import { SUPPORTED_ECOSYSTEMS } from '../../../services/osv-api/ecosystem-catalog.js';
 
 export const osvListEcosystems = tool('osv_list_ecosystems', {
   description:
-    'Return the supported ecosystem identifier strings for osv_query_package and osv_query_batch: every ecosystem the OSV schema names that OSV.dev accepts at query time, plus GIT, as verified on 2026-10-31. Ecosystem strings are case-sensitive exact matches — passing "pypi" instead of "PyPI" returns an error from the API. Use this tool to discover valid ecosystem strings before querying, or to verify an ecosystem identifier from a lockfile format. The list is static and may lag ecosystems added after that date.',
+    'Return the supported ecosystem base names for osv_query_package and osv_query_batch: every ecosystem the OSV schema names that OSV.dev accepts at query time, plus GIT, as verified on 2026-10-31. Known base names are case-insensitive. Preserve suffix spelling. Alpine needs a release branch, such as Alpine:v3.17. The list is static and may lag ecosystems added after that date.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
 
   input: z.object({}),
@@ -86,7 +17,7 @@ export const osvListEcosystems = tool('osv_list_ecosystems', {
     ecosystems: z
       .array(z.string().describe('A supported ecosystem identifier string.'))
       .describe(
-        'Supported ecosystem identifier strings. These are case-sensitive exact matches required by the ecosystem parameter of osv_query_package and osv_query_batch.',
+        'Canonical ecosystem base names recognized by osv_query_package and osv_query_batch.',
       ),
     note: z.string().describe('Advisory note about list currency and canonical source.'),
   }),
@@ -95,7 +26,7 @@ export const osvListEcosystems = tool('osv_list_ecosystems', {
     ctx.log.info('Listing OSV ecosystems', { count: SUPPORTED_ECOSYSTEMS.length });
     return {
       ecosystems: [...SUPPORTED_ECOSYSTEMS],
-      note: 'Every ecosystem the OSV schema (validation/schema.json) names that OSV.dev accepts at query time, plus GIT, as verified on 2026-10-31. A schema ecosystem OSV.dev does not yet accept is left out until it does. The list may lag later additions; OSV.dev is the authority at query time. Canonical reference: https://ossf.github.io/osv-schema/#affectedpackageecosystem-field',
+      note: 'Every ecosystem the OSV schema (validation/schema.json) names that OSV.dev accepts at query time, plus GIT, as verified on 2026-10-31. Known base names are case-insensitive. Preserve suffix spelling. For Alpine, add a colon, v, and the major.minor release branch, such as Alpine:v3.17. The list may lag later additions. Canonical reference: https://ossf.github.io/osv-schema/#affectedpackageecosystem-field',
     };
   },
 

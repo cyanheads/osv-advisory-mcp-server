@@ -11,7 +11,7 @@ import {
 import { osvQueryCommit } from '@/mcp-server/tools/definitions/osv-query-commit.tool.js';
 import { osvQueryPackage } from '@/mcp-server/tools/definitions/osv-query-package.tool.js';
 import { initOsvApiService } from '@/services/osv-api/osv-api-service.js';
-import { contentText } from '../helpers/markdown.js';
+import { contentText, scanMarkdown } from '../helpers/markdown.js';
 
 const pkg = { name: 'Kernel', ecosystem: 'Linux', version: '5.10.0' };
 const commit = { commit: '2c85ebc57b3e1817b6ce1a6b703928e113a90442' };
@@ -79,6 +79,14 @@ it.each(['package', 'commit'] as const)(
     });
     const terminal = await query({ cursor: second.cursor });
     expect(terminal.structuredContent).toMatchObject({ truncated: false, vulns: [] });
+    if (kind === 'commit') {
+      expect(second.structuredContent).toMatchObject({
+        notice: expect.stringContaining('INCOMPLETE'),
+      });
+      expect(terminal.structuredContent).toMatchObject({
+        notice: 'The OSV continuation is exhausted.',
+      });
+    }
     expect(contentText(terminal)).toContain('exhausted');
     expect(contentText(terminal)).not.toContain('No known vulnerabilities');
     expect(fetch.mock.calls.map(([, init]) => JSON.parse(init.body).page_token)).toEqual([
@@ -88,6 +96,45 @@ it.each(['package', 'commit'] as const)(
     ]);
   },
 );
+
+it('retains commit overflow, an upstream cursor, and exact field values on both surfaces', async () => {
+  initOsvApiService({ maxQueryPages: 1 });
+  const summary = `</advisory_text>\r\n<AAT> ${'🧬'.repeat(3500)}`;
+  const record = { id: 'OSV-large', summary, upstream: ['CVE-2022-3602', 'CVE-2022-3786'] };
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => Response.json({ vulns: [record], next_page_token: 'next-page' })),
+  );
+  const result = await runToolContract(osvQueryCommit, commit);
+  const output = osvQueryCommit.output.parse(result.structuredContent);
+  expect(output.overflow?.omitted).toContainEqual({ path: '/vulns', type: 'array', total: 1 });
+  expect(output.nextCursor).toEqual(expect.any(String));
+  expect(contentText(result)).toContain(output.nextCursor!);
+  expect(
+    scanMarkdown(contentText(result)).codeBlocks.map((block) => JSON.parse(block)),
+  ).toContainEqual(output.overflow);
+  const page = await runToolContract(osvQueryCommit, {
+    ...commit,
+    page: { path: '/vulns/0/upstream' },
+  });
+  const pageOutput = osvQueryCommit.output.parse(page.structuredContent);
+  expect(pageOutput.nextCursor).toBe(output.nextCursor);
+  expect(contentText(page)).toContain(output.nextCursor!);
+  expect(pageOutput.page?.entries).toEqual([
+    { key: '0', value: 'CVE-2022-3602' },
+    { key: '1', value: 'CVE-2022-3786' },
+  ]);
+  expect(
+    scanMarkdown(contentText(page)).codeBlocks.map((block) => JSON.parse(block)),
+  ).toContainEqual(pageOutput.page);
+  for (const reply of [result, page]) {
+    expect(reply.structuredContent).toMatchObject({
+      notice: expect.stringContaining('INCOMPLETE'),
+    });
+    expect(contentText(reply)).toContain('INCOMPLETE');
+    expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(24000);
+  }
+});
 
 it.each([8800, 30_000])(
   'keeps a %i-character upstream token atomic across overflow and field replay',

@@ -6,11 +6,11 @@
 
 | Name | Description | Key Inputs | Annotations | Errors |
 |:-----|:------------|:-----------|:------------|:-------|
-| `osv_query_package` | Query a package version, retaining package-scoped severity and fixes. | `{name, ecosystem, version}` or `{purl, version?}`; optional `cursor` and `page: {path, offset?, revision?, advisoryId?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | Invalid identifiers, cursors and page requests fail validation; `advisory_not_found` is NotFound |
-| `osv_query_batch` | Audit mixed tuple/PURL identifiers with positional results and package-scoped severity and fixes. | `packages` (1–5,000 identifiers, processing the first 1,000); optional `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | Invalid page requests fail validation; identifier and upstream failures set affected rows' `error`, cancellation fails the call |
-| `osv_query_commit` | Query a full Git commit with record-wide severity and GIT range details. | `commit` (40/64 hexadecimal characters); optional `cursor` and `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | `invalid_commit_query`, `invalid_cursor`, `invalid_page_path`, `stale_page_revision` (ValidationError) |
-| `osv_get_vulnerability` | Fetch the full record for one exact OSV advisory ID (`GHSA-…`, `PYSEC-…`, `RUSTSEC-…`, `GO-…`, `DSA-…-1`, `USN-…-1`, `RHSA-…`, `CVE-…`). Returns: summary, details, aliases (CVE IDs), severity, affected packages/ranges, fix versions, CWE IDs, references. | `id` (one complete OSV advisory ID); optional `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | `vulnerability_not_found` (NotFound); `invalid_page_path`, `stale_page_revision` (ValidationError) |
-| `osv_list_ecosystems` | Return the list of supported ecosystem strings. Use before querying to validate the `ecosystem` parameter — ecosystem strings are case-sensitive exact matches. | none | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | — |
+| `osv_query_package` | Query a package version, retaining package-scoped severity and fixes. | `{name, ecosystem, version}` or `{purl, version?}`; optional `cursor` and `page: {path, offset?, revision?, advisoryId?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: true` | Invalid identifiers, cursors and page requests fail validation; `advisory_not_found` is NotFound |
+| `osv_query_batch` | Audit mixed tuple/PURL identifiers with positional results and package-scoped severity and fixes. | `packages` (1–5,000 identifiers, processing the first 1,000); optional `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: true` | Invalid page requests fail validation; identifier and upstream failures set affected rows' `error`, cancellation fails the call |
+| `osv_query_commit` | Query a full Git commit with record-wide severity and GIT range details. | `commit` (40/64 hexadecimal characters); optional `cursor` and `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: true` | `invalid_commit_query`, `invalid_cursor`, `invalid_page_path`, `stale_page_revision` (ValidationError) |
+| `osv_get_vulnerability` | Fetch the full record for one exact OSV advisory ID (`GHSA-…`, `PYSEC-…`, `RUSTSEC-…`, `GO-…`, `DSA-…-1`, `USN-…-1`, `RHSA-…`, `CVE-…`). Returns: summary, details, aliases (CVE IDs), severity, affected packages/ranges, fix versions, CWE IDs, references. | `id` (one complete OSV advisory ID); optional `page: {path, offset?, revision?}` | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: true` | `vulnerability_not_found` (NotFound); `invalid_page_path`, `stale_page_revision` (ValidationError) |
+| `osv_list_ecosystems` | Return canonical ecosystem names. Query tools normalize known base names case-insensitively while preserving suffixes. | none | `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false` | — |
 
 ### Resources
 
@@ -100,13 +100,17 @@ Each step is independently testable. Steps 3 and 4 can be developed in parallel 
 
 ### Package identity and commit scope
 
-Package queries accept either the existing name/ecosystem/version tuple or a PURL with exactly one embedded or separate version. `packageurl-js` parses the standard syntax; the OSV adapter derives the package coordinate used by the existing affected-package matcher. The original PURL is echoed unchanged. It is sent upstream unchanged unless an embedded npm/crates.io exact pin needs normalization; that wire PURL retains qualifiers and subpaths. This keeps package-scoped severity and fixes consistent between equivalent tuple and PURL calls. Batch rows may mix both forms, and malformed or unsupported identifiers fail their own rows without losing the submitted identity.
+Package queries accept a name/ecosystem/version tuple or a PURL with exactly one embedded or separate version. `packageurl-js` parses the standard syntax; the OSV adapter derives the package coordinate used by the affected-package matcher. The original PURL is echoed unchanged. Native PURL dispatch preserves qualifiers and subpaths, except when an embedded npm/crates.io exact pin needs normalization. Alpine PURLs instead dispatch a release-qualified tuple because OSV's native PURL lookup loses the branch. Batch rows may mix both forms, and malformed or unsupported identifiers fail their own rows without losing the submitted identity.
+
+The shared ecosystem catalog folds known base names to canonical case before version validation, leaving suffix bytes and unknown bases unchanged. Alpine requires a nonempty tuple release suffix; a PURL `distro` of `3.17`, `v3.17`, or `3.17.3` selects `Alpine:v3.17`. Maven requires `groupId:artifactId`, accepts one unambiguous slash as the separator, and retains repository suffixes. Composer PURLs retain native dispatch while deriving `Packagist` vendor/package matching and optional `repository_url` scope. Indexed and fallback batch ecosystem errors use the single-query recovery guidance without expanding the bounded retry policy.
 
 Versions are exact installed versions, validated before upstream work to avoid OSV's fuzzy matching of malformed versions. npm/crates.io accept SemVer-shaped exact versions (including leading `v`, prereleases and build metadata), normalizing one `=` or `==` exact pin in metadata and wire requests. Both preserve legacy leading-zero core and numeric prerelease components, such as npm `04.17.20`/`4.17.20-alpha.01` and crates.io `00.7.0`, because OSV already interprets these unambiguous exact versions correctly. PyPI comparison specifiers, RubyGems requirement operators and Maven interval/union syntax are rejected with `invalid_version`; the package error contract supplies lockfile recovery on both MCP surfaces. Other ecosystems retain their native version syntax, and GIT tags pass through unchanged. Validation stays in the shared identifier resolver rather than narrowing the advertised schemas, so invalid batch versions remain row errors.
 
 Commit queries use a dedicated tool because a commit has no package identity. They accept complete SHA-1 or SHA-256 hashes, normalize severity across the record, preserve GIT repositories and ordered range events, and omit package-specific `fixedVersions`. They share the bounded retrieval model and upstream page cap.
 
 Package, commit and batch queries use a 50-second deadline across requests, retries, body reads and hydration. If the deadline expires after a usable page, the reply returns findings through that checkpoint and a `nextCursor`. Before a usable checkpoint, deadline expiry fails the query or affected batch row. Caller cancellation propagates.
+
+Batch field retrieval shares that deadline across the rows fetched for a single call and keeps it distinct from caller cancellation. A `/results` page retains entries that fit, including the active row's recoverable cursor or row error, and reports the first unread row as `page.nextOffset`. A nested row lookup preserves its checkpoint; a genuine caller abort still fails the call.
 
 ### Bounded stateless retrieval
 
@@ -171,11 +175,13 @@ Entries come from the record-level `severity[]`, or when it is empty, from `affe
 
 ### Caller-coordinate rendering
 
-Caller package coordinates are literal data in headings, batch outcome rows, PURL lines, notices, and retrieval JSON. Single-line names and versions use framework-sized code spans; multiline coordinates use `escapeMarkdownInline` to preserve rendered line breaks. Ecosystems and PURLs use the same inline escape, and package notices escape each quoted line through an explicit enrichment renderer. `wireMeasure` receives that renderer so escape expansion counts toward the actual assembled response budget; other tools retain the framework's default notice behavior. Retrieval maps preview and page entries back to source coordinate fields before escaping only those JSON leaves. Advisory HTTP links retain their existing behavior, and structured caller strings remain unchanged.
+Caller package coordinates are literal data in headings, batch outcome rows, PURL lines, notices, and retrieval JSON. Single-line names and versions use framework-sized code spans; multiline coordinates use `escapeMarkdownInline` to preserve rendered line breaks. Ecosystems and PURLs use the same inline escape, and package notices escape each quoted line through an explicit enrichment renderer. `wireMeasure` receives that renderer so escape expansion counts toward the actual assembled response budget. Commit clean, incomplete and exhausted-continuation notices use declared enrichment, with its serialized cost included in measurement; field retrieval never receives a clean notice. Retrieval maps preview and page entries back to source coordinate fields before escaping only those JSON leaves. Advisory HTTP links retain their existing behavior, and structured caller strings remain unchanged.
 
 ### Render-boundary escape for advisory text
 
 OSV strings are upstream-controlled Markdown. `format()` passes every OSV-sourced string through `mcp-server/tools/render-escape.ts`; `structuredContent` stays verbatim. The inline escape (summaries, IDs, versions, URLs, timestamps, error text) turns line breaks into a space and `<` that could start raw HTML or an autolink (before an ASCII letter, `/`, `!`, `?`, or an email local part ending in `@`) into `&lt;`, backslash-escapes a `]` that closes an inline link or image whose destination is not an `http(s)://` URL or that precedes `:`, and backslash-escapes a leading reference-definition `[` or fence run. A `]` an upstream backslash already escapes is left alone: escaping it again would make `\\]`, a literal backslash before a live bracket. The block escape (`details`) applies the same rules line by line, minus the `]:` rule, keeps column-0 fenced code literal except for the frame tags, closes a fence the text leaves open, and stops exempting fences after one opens indented 1–3 spaces.
+
+Commit advisories use literal Markdown for ordinary scalar fields and reversible fenced JSON for nested data or scalar values that need exact escapes. Commit and full-detail field pages also use fenced JSON. JSON escapes preserve frame-opening characters without exposing them as frame delimiters; parsing a code block recovers the original value. This avoids applying the prose escape to serialized data, where an HTML entity would change the decoded string.
 
 - **Not the framework's `escapeHtml`** — it re-escapes `&` and quotes, which changes rendered prose (`&lt;script&gt;` would show as entity text).
 - **Finite frame recognition before Markdown processing** — case-insensitive `advisory_summary` and `advisory_text`, opening or closing, render as `[OSV frame-like text: …]`. Recognition permits ASCII/fullwidth brackets and slash and ignores only U+0009–000D, U+0020, U+200B–200F, U+2028–202E, U+2060, U+2066–2069, and U+FEFF between token characters. It runs before line and fence handling so the same rule applies in prose and code. Other strings are never Unicode-normalized; structured output remains verbatim. This bounds token recognition, not semantic prompt injection or all Unicode confusables.
@@ -185,9 +191,11 @@ OSV strings are upstream-controlled Markdown. `format()` passes every OSV-source
 - **An inline value's `]:` is escaped** — `osv_get_vulnerability` renders reference and range types right after a line-leading server `[`, so a type ending `ADVISORY]: javascript:…` would complete a reference definition that relinks every `[ADVISORY]` label. `details` needs no such rule: the server opens no `[` before it, and its own line-leading definitions are caught by the `[` check.
 - **Out of scope** — emphasis bleeding into server lines and backticks breaking out of identifier code spans; neither hides text, forges the frame, or makes a link once `<` and link destinations are escaped. A fence opened indented 1–3 spaces and never closed still runs to the end of the response in a rendered view.
 
-### aliases field is the NVD bridge
+### Advisory relationships and affected metadata
 
-Every vuln output prominently surfaces `aliases` as a first-class field alongside the OSV ID. This is the primary composition point: an agent calls `osv_query_package` or `osv_query_batch`, gets `aliases: ["CVE-2020-28500"]`, and chains to `nvd_get_cve` on `nist-nvd-mcp-server` for CVSS scoring and CISA KEV status. The `format()` function renders aliases in bold at the top of each vuln entry so `content[]`-only clients see them without having to scan the full record.
+Every advisory surface preserves `aliases` and optional ordered `upstream` IDs independently. CVE-shaped values from either list chain to `nvd_get_cve` on `nist-nvd-mcp-server` for CVSS scoring and CISA KEV status. An alias names the same reported vulnerability; a distribution advisory can cover several upstream vulnerabilities. Neither relationship changes advisory counts or package-scoped severity and fixes.
+
+Full detail also preserves optional `related` IDs and each affected entry's `ecosystem_specific` and `database_specific` objects, including arbitrary nested JSON keys and values. These objects carry source-specific remediation context such as Go imports and symbols. Missing source fields remain absent. Metadata is rendered as reversible fenced JSON and stays addressable through the existing field-page paths; the same byte measurement includes its rendered form.
 
 ---
 
@@ -276,7 +284,7 @@ Events:
 
 ### `osv_query_package`
 
-**Description:** Query known vulnerabilities for a single package version across any supported ecosystem. Returns matching OSV advisories with severity (CVSS vectors), CVE aliases, affected version ranges, and the fixed versions listed for the queried package. Use `osv_list_ecosystems` to find case-sensitive ecosystem identifiers.
+**Description:** Query known vulnerabilities for a single package version across any supported ecosystem. Returns matching OSV advisories with severity (CVSS vectors), CVE aliases, affected version ranges, and the fixed versions listed for the queried package. Use `osv_list_ecosystems` to find canonical ecosystem identifiers.
 
 **Input:** `{name, ecosystem, version}` or `{purl, version?}`, with optional `cursor` for upstream continuation and `page` for field retrieval. The root schema advertises optional fields and validates their exclusivity. A PURL requires exactly one embedded or separate version and excludes `name` and `ecosystem`.
 
@@ -322,8 +330,9 @@ z.object({
     package: z.string().describe('Queried package name.'),
     ecosystem: z.string().describe('Queried ecosystem.'),
     version: z.string().describe('Queried version.'),
+    purl: z.string().optional().describe('Original PURL when used instead of the package tuple.'),
     vulnCount: z.number().describe('Number of vulnerabilities found.'),
-  }).describe('Echo of query parameters for verification.'),
+  }).describe('Effective package coordinates after normalization, with the original PURL when supplied.'),
 })
 ```
 
@@ -333,13 +342,13 @@ errors: [
   {
     reason: 'invalid_ecosystem',
     code: JsonRpcErrorCode.ValidationError,
-    when: 'Ecosystem string is not recognized by OSV (API returns code 3). Ecosystem names are case-sensitive exact matches.',
+    when: 'Ecosystem string is not recognized by OSV after known base-name case normalization (API returns code 3).',
     recovery: 'Call osv_list_ecosystems to see valid ecosystem strings, then retry with the correct value.',
   },
 ]
 ```
 
-**Annotations:** `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`
+**Annotations:** `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: true`
 
 ---
 
@@ -353,9 +362,10 @@ errors: [
 ```ts
 z.object({
   results: z.array(z.object({
-    name: z.string().describe('Package name from input.'),
-    ecosystem: z.string().describe('Ecosystem from input.'),
-    version: z.string().describe('Version from input.'),
+    name: z.string().describe('Effective package name when the identifier resolves.'),
+    ecosystem: z.string().describe('Effective ecosystem when the identifier resolves.'),
+    version: z.string().describe('Effective version when the identifier resolves.'),
+    purl: z.string().optional().describe('Original PURL when supplied, including when the identifier cannot be resolved.'),
     vulnerable: z.boolean().describe('True if any vulnerabilities were found.'),
     truncated: z.boolean().describe('Upstream matching is incomplete.'),
     nextCursor: z.string().optional().describe('Continue the row with osv_query_package.'),
@@ -392,7 +402,7 @@ z.object({
 
 Ecosystems are not checked against a local allowlist: OSV.dev is the authority. Indexed validation recovery preserves original row positions, while repeated or non-indexed rejection uses per-package workers. `results[i].error` identifies failed rows and `summary.errorCount` counts them. A shared advisory detail failure affects every dependent row. Malformed native envelopes and exhausted transient failures affect the submitted group; unrelated completed rows remain successful. Cancellation is a tool error, never a completed scan.
 
-**Annotations:** `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`
+**Annotations:** `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: true`
 
 ---
 
@@ -476,20 +486,20 @@ errors: [
 ]
 ```
 
-**Annotations:** `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`
+**Annotations:** `readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: true`
 
 ---
 
 ### `osv_list_ecosystems`
 
-**Description:** Return the supported ecosystem identifier strings for `osv_query_package` and `osv_query_batch`: every ecosystem the OSV schema names that OSV.dev accepts at query time, plus `GIT`, as verified on a stated date. Ecosystem strings are case-sensitive exact matches — passing `"pypi"` instead of `"PyPI"` returns an error from the API. Use this tool to discover valid ecosystem strings before querying, or to verify an ecosystem identifier from a lockfile format. The list is static and may lag ecosystems added after that date.
+**Description:** Return canonical ecosystem identifiers for `osv_query_package` and `osv_query_batch`: every ecosystem the OSV schema names that OSV.dev accepts at query time, plus `GIT`, as verified on a stated date. Query tools normalize known base names case-insensitively and preserve release and repository suffixes. Unknown names pass through to OSV.dev. The static list may lag ecosystems added after that date.
 
 **Input:** none (empty object)
 
 **Output:**
 ```ts
 z.object({
-  ecosystems: z.array(z.string()).describe('Supported ecosystem identifier strings. Pass these values exactly (case-sensitive) in the ecosystem parameter of other tools.'),
+  ecosystems: z.array(z.string()).describe('Canonical ecosystem identifier strings. Query tools normalize known base names case-insensitively and preserve release and repository suffixes.'),
   note: z.string().describe('Advisory note about list currency and canonical source.'),
 })
 ```

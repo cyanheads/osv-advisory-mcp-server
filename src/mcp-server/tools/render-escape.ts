@@ -12,6 +12,31 @@
 
 import { escapeMarkdownInline, MarkdownBuilder } from '@cyanheads/mcp-ts-core/utils';
 
+/** Serialize a JSON value in a code fence, keeping data from imitating advisory frames. */
+export function advisoryJsonFence(value: unknown): string {
+  const json = JSON.stringify(value).replaceAll('<', '\\u003c').replaceAll('＜', '\\uff1c');
+  return `\`\`\`json\n${json}\n\`\`\``;
+}
+
+/** Render ordered OSV IDs without exposing frame-like strings as wire text. */
+export function renderAdvisoryIds(label: string, ids: string[]): string {
+  if (
+    ids.some(
+      (id) =>
+        id.includes('<') ||
+        id.includes('＜') ||
+        id.includes('\r') ||
+        id.includes('\n') ||
+        id.includes('\0') ||
+        id.length === 0 ||
+        id.includes(','),
+    )
+  ) {
+    return `${label}:\n\n${advisoryJsonFence(ids)}\n`;
+  }
+  return `${label}: ${ids.map(callerCode).join(', ') || '[]'}`;
+}
+
 /** Keep one-line coordinates in code spans; multiline values retain their line breaks. */
 export function callerCode(value: string): string {
   return value.includes('\n') || value.includes('\r')

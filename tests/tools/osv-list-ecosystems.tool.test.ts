@@ -5,10 +5,8 @@
 
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it } from 'vitest';
-import {
-  osvListEcosystems,
-  SUPPORTED_ECOSYSTEMS,
-} from '@/mcp-server/tools/definitions/osv-list-ecosystems.tool.js';
+import { osvListEcosystems } from '@/mcp-server/tools/definitions/osv-list-ecosystems.tool.js';
+import { SUPPORTED_ECOSYSTEMS } from '@/services/osv-api/ecosystem-catalog.js';
 
 describe('osvListEcosystems', () => {
   it('returns all supported ecosystems', async () => {
@@ -32,7 +30,7 @@ describe('osvListEcosystems', () => {
   it('does not include incorrect ecosystem strings', async () => {
     const ctx = createMockContext();
     const result = await osvListEcosystems.handler({}, ctx);
-    // pypi (lowercase) is not valid — the correct value is PyPI
+    // The list shows canonical spellings, even when queries accept other casing.
     expect(result.ecosystems).not.toContain('pypi');
     expect(result.ecosystems).not.toContain('NPM');
     // #12: GSD is an OSV vulnerability-ID prefix, not an ecosystem — OSV rejects it.
@@ -86,6 +84,8 @@ describe('osvListEcosystems', () => {
     for (const text of [result.note, osvListEcosystems.description]) {
       expect(text).toContain('GIT');
       expect(text).toMatch(/accept/i);
+      expect(text).toContain('Alpine:v3.17');
+      expect(text).toContain('Preserve suffix spelling.');
     }
   });
 

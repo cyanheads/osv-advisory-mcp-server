@@ -4,7 +4,7 @@ description: Use osv_* tools to audit resolved dependencies or Git commits, retr
 license: Apache-2.0
 metadata:
   author: "cyanheads"
-  version: "1.1"
+  version: "1.2"
 ---
 
 ## Scope
@@ -13,9 +13,11 @@ Use OSV for known vulnerabilities in exact resolved package versions or full Git
 
 ## Identifiers
 
-Take advisory IDs from `osv_query_package`, `osv_query_batch`, or `osv_query_commit` results and pass them to `osv_get_vulnerability`. CVE aliases identify the same reported vulnerability in another database; they are not extra findings to count.
+Take advisory IDs from `osv_query_package`, `osv_query_batch`, or `osv_query_commit` results and pass them to `osv_get_vulnerability`. CVE aliases identify the same reported vulnerability in another database. Distribution advisories may instead list several vulnerabilities in `upstream`; use CVE-shaped values from either list for NVD lookup, while retaining the original advisory count. `related` IDs describe relationships, not aliases. Retrieve affected-entry source metadata when remediation depends on imported Go packages or symbols.
 
 Page paths and revisions come from the response being retrieved. Batch row indexes refer to the original input order, including failed rows.
+
+Take Alpine's release branch from the audited system or SBOM, not the package version: `Alpine:v3.17` and the PURL qualifier `distro=3.17.3` select the same branch. Maven coordinates need both group ID and artifact ID; an artifact name alone is ambiguous. Composer PURLs use the Packagist vendor/package identity. Preserve an explicit repository URL when the lockfile supplies it; a repository-scoped empty result does not establish that the public registry package is clean.
 
 ## Gates
 

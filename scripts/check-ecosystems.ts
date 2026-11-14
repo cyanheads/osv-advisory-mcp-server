@@ -20,7 +20,7 @@
  */
 
 import process from 'node:process';
-import { SUPPORTED_ECOSYSTEMS } from '../src/mcp-server/tools/definitions/osv-list-ecosystems.tool.js';
+import { SUPPORTED_ECOSYSTEMS } from '../src/services/osv-api/ecosystem-catalog.js';
 
 export const SCHEMA_URL =
   'https://raw.githubusercontent.com/ossf/osv-schema/main/validation/schema.json';
@@ -185,7 +185,7 @@ export function renderReport(result: CheckResult): string {
   const verdict =
     exitCodeFor(result) === 0
       ? 'In sync — the catalog matches the accepted schema set plus GIT.'
-      : 'Drift — update SUPPORTED_ECOSYSTEMS in src/mcp-server/tools/definitions/osv-list-ecosystems.tool.ts, its verification date, and the pinning test.';
+      : 'Drift — update SUPPORTED_ECOSYSTEMS in src/services/osv-api/ecosystem-catalog.ts, the listing tool verification date, and the pinning test.';
   return [
     `Probed ${result.probed} ecosystems against ${QUERY_URL}.`,
     section('add — in the schema, accepted, missing from the catalog', result.add),

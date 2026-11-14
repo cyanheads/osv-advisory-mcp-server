@@ -12,6 +12,197 @@ import { captureOsvQueries, loadOsvRecord } from '../helpers/osv-fixtures.js';
 afterEach(() => vi.unstubAllGlobals());
 describe('PURL package queries', () => {
   it.each([
+    [
+      { name: 'openssl', ecosystem: 'Alpine', version: '3.0.8-r0' },
+      'alpine_release_required',
+      'Alpine:v3.17',
+    ],
+    [
+      { name: 'log4j-core', ecosystem: 'Maven', version: '2.14.1' },
+      'invalid_maven_name',
+      'groupId:artifactId',
+    ],
+  ] as const)('surfaces actionable coordinate errors for %j', async (input, reason, hint) => {
+    const bodies = captureOsvQueries([]);
+    initOsvApiService();
+    const reply = await runToolContract(osvQueryPackage, input);
+    expect(reply.structuredContent).toMatchObject({
+      error: { data: { reason, recovery: { hint: expect.stringContaining(hint) } } },
+    });
+    expect(JSON.stringify(reply.content)).toContain(hint);
+    expect(bodies).toEqual([]);
+  });
+
+  it('explains indexed and fallback ecosystem rejections at their original batch rows', async () => {
+    const native = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        Response.json(
+          {
+            code: 3,
+            message:
+              'error in query at index 0: rpc error: code = InvalidArgument desc = invalid ecosystem',
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+    const single = vi.fn((query: { package: { ecosystem: string } }) =>
+      Promise.resolve(
+        query.package.ecosystem === 'PyPI'
+          ? Response.json({})
+          : Response.json({ code: 3, message: 'invalid ecosystem' }, { status: 400 }),
+      ),
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body));
+        return new URL(url).pathname === '/v1/querybatch' ? native(body) : single(body);
+      }),
+    );
+    initOsvApiService();
+    const packages = [
+      { purl: 'broken' },
+      { name: 'a', ecosystem: 'Unlisted-One', version: '1' },
+      { name: 'b', ecosystem: 'Unlisted-Two', version: '1' },
+      { name: 'c', ecosystem: 'pypi', version: '1' },
+    ];
+    const batch = await runToolContract(osvQueryBatch, { packages });
+    expect(batch.structuredContent).toMatchObject({
+      summary: { errorRows: [0, 1, 2], cleanCount: 1 },
+      results: [
+        { error: expect.stringContaining('Malformed PURL') },
+        {
+          error:
+            'Ecosystem "Unlisted-One" is not recognized by OSV. Call osv_list_ecosystems to see valid ecosystem strings, then retry with the correct value.',
+        },
+        {
+          error:
+            'Ecosystem "Unlisted-Two" is not recognized by OSV. Call osv_list_ecosystems to see valid ecosystem strings, then retry with the correct value.',
+        },
+        { ecosystem: 'PyPI', error: null },
+      ],
+    });
+    expect(JSON.stringify(batch.content)).toContain('Call osv_list_ecosystems');
+    expect(native).toHaveBeenCalledTimes(2);
+    expect(
+      native.mock.calls.map(([body]) =>
+        body.queries.map((row: { package: { ecosystem: string } }) => row.package.ecosystem),
+      ),
+    ).toEqual([
+      ['Unlisted-One', 'Unlisted-Two', 'PyPI'],
+      ['Unlisted-Two', 'PyPI'],
+    ]);
+    expect(single).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the Alpine release coordinate across batch continuation and advisory field retrieval', async () => {
+    const purl = 'pkg:apk/alpine/openssl?distro=v3.17.3';
+    const input = { purl, version: '3.0.8-r0' };
+    const query = {
+      package: { name: 'openssl', ecosystem: 'Alpine:v3.17' },
+      version: input.version,
+    };
+    const record = {
+      id: 'ALPINE-CVE-2023-0464',
+      affected: ['Alpine:v3.18', 'Alpine:v3.17'].map((ecosystem, index) => ({
+        package: { name: 'openssl', ecosystem },
+        ranges: [
+          {
+            type: 'ECOSYSTEM',
+            events: [{ introduced: '0' }, { fixed: index ? '3.0.8-r1' : '3.1.0-r1' }],
+          },
+        ],
+      })),
+    };
+    const fetchMock = vi.fn((url: string | URL, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      if (path === '/v1/querybatch') {
+        expect(JSON.parse(String(init?.body))).toEqual({ queries: [query] });
+        return Promise.resolve(Response.json({ results: [{ next_page_token: 'next' }] }));
+      }
+      if (path === '/v1/query') {
+        expect(JSON.parse(String(init?.body))).toEqual({ ...query, page_token: 'next' });
+        return Promise.resolve(Response.json({ vulns: [record] }));
+      }
+      expect(path).toBe(`/v1/vulns/${record.id}`);
+      return Promise.resolve(Response.json(record));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    initOsvApiService({ maxQueryPages: 1 });
+    const invalid = { purl: 'pkg:apk/alpine/openssl@3.0.8-r0' };
+    const batch = await runToolContract(osvQueryBatch, { packages: [invalid, input] });
+    const batchValue = osvQueryBatch.output.parse(batch.structuredContent);
+    expect(batchValue.summary).toMatchObject({ errorRows: [0], truncatedRows: [1] });
+    expect(batchValue.results).toMatchObject([
+      { purl: invalid.purl, error: expect.stringContaining('Alpine:v<major>.<minor>') },
+      { purl, ecosystem: 'Alpine:v3.17', truncated: true },
+    ]);
+    expect(JSON.stringify(batch.content)).toContain('Alpine:v3.17');
+    const cursor = batchValue.results![1]!.nextCursor!;
+    const resumed = await runToolContract(osvQueryPackage, { ...input, cursor });
+    expect(resumed.structuredContent).toMatchObject({
+      queryMeta: { purl, ecosystem: 'Alpine:v3.17' },
+      vulns: [{ fixedVersions: ['3.0.8-r1'] }],
+    });
+    expect(JSON.stringify(resumed.content)).toContain('Fixed in 3.0.8-r1');
+    const field = await runToolContract(osvQueryPackage, {
+      ...input,
+      cursor,
+      page: { advisoryId: record.id, path: '/fixedVersions' },
+    });
+    expect(field.structuredContent).toMatchObject({ page: { entries: [{ value: '3.0.8-r1' }] } });
+    expect(JSON.stringify(field.content)).toContain('3.0.8-r1');
+    const stale = await runToolContract(osvQueryPackage, {
+      ...input,
+      purl: 'pkg:apk/alpine/openssl?distro=v3.18',
+      cursor,
+    });
+    expect(stale.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('scopes Composer fixes to the PURL repository while forwarding its wire identity', async () => {
+    const purl = 'pkg:composer/guzzlehttp/guzzle?repository_url=https%3A%2F%2Fexample.org%2FRepo';
+    const ecosystem = 'Packagist:https://example.org/Repo';
+    const input = { purl, version: '7.4.0' };
+    const record = {
+      id: 'OSV-composer',
+      affected: ['Packagist', ecosystem].map((scope, index) => ({
+        package: { name: 'guzzlehttp/guzzle', ecosystem: scope },
+        ranges: [
+          {
+            type: 'ECOSYSTEM' as const,
+            events: [{ introduced: '0' }, { fixed: index ? '7.4.1' : '8.0.0' }],
+          },
+        ],
+        severity: [{ type: 'Ubuntu', score: index ? 'low' : 'critical' }],
+      })),
+    };
+    const bodies = captureOsvQueries([record]);
+    initOsvApiService();
+    const single = await runToolContract(osvQueryPackage, input);
+    expect(single.structuredContent).toMatchObject({
+      queryMeta: { purl, ecosystem, package: 'guzzlehttp/guzzle' },
+      vulns: [{ fixedVersions: ['7.4.1'], severityLabel: 'LOW' }],
+    });
+    expect(JSON.stringify(single.content)).toContain('Fixed in 7.4.1');
+    const batch = await runToolContract(osvQueryBatch, { packages: [input] });
+    expect(batch.structuredContent).toMatchObject({
+      results: [{ purl, ecosystem, vulns: [{ fixedVersions: ['7.4.1'], severityLabel: 'LOW' }] }],
+    });
+    expect(JSON.stringify(batch.content)).toContain('7.4.1');
+    const field = await runToolContract(osvQueryPackage, {
+      ...input,
+      page: { advisoryId: record.id, path: '/fixedVersions' },
+    });
+    expect(field.structuredContent).toMatchObject({ page: { entries: [{ value: '7.4.1' }] } });
+    expect(bodies).toEqual([
+      { package: { purl }, version: '7.4.0' },
+      { package: { purl }, version: '7.4.0' },
+    ]);
+  });
+  it.each([
     ['npm', 'npm'],
     ['crates.io', 'cargo'],
   ])(

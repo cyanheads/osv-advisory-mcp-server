@@ -9,10 +9,15 @@ import { escapeMarkdownInline } from '@cyanheads/mcp-ts-core/utils';
 import {
   callerCode,
   escapeAdvisoryInline,
+  renderAdvisoryIds,
   renderCallerNotice,
 } from '@/mcp-server/tools/render-escape.js';
 import type { OsvPackageVulnerability } from '@/services/osv-api/osv-api-service.js';
-import { getOsvApiService } from '@/services/osv-api/osv-api-service.js';
+import {
+  getOsvApiService,
+  INVALID_ECOSYSTEM_RECOVERY,
+  invalidEcosystemMessage,
+} from '@/services/osv-api/osv-api-service.js';
 import { resolvePackage } from '@/services/osv-api/package-identifier.js';
 import {
   CONTINUATION_EXHAUSTED_NOTICE,
@@ -31,6 +36,7 @@ import {
   renderRetrieval,
   wireMeasure,
 } from '../response-pages.js';
+import { UpstreamIds } from '../upstream-ids.js';
 
 /** Project the same package-scoped normalization on query and advisory retrieval paths. */
 function projectAdvisory(v: OsvPackageVulnerability) {
@@ -38,6 +44,7 @@ function projectAdvisory(v: OsvPackageVulnerability) {
     id: v.id,
     summary: v.summary,
     aliases: v.aliases,
+    ...(v.upstream === undefined ? {} : { upstream: v.upstream }),
     severity: v.severity,
     severityLabel: v.severityLabel,
     severitySource: v.severitySource,
@@ -145,6 +152,7 @@ export const VulnOutputSchema = z.object({
       'Alternative IDs — typically CVE IDs (e.g. ["CVE-2020-28500"]). ' +
         'Accepted by nist-nvd-mcp-server for CVSS scores and CISA KEV status.',
     ),
+  upstream: UpstreamIds,
   severity: z
     .array(SeverityEntrySchema.describe('One record-level severity entry.'))
     .describe(
@@ -195,7 +203,9 @@ const PackageFullOutput = z.object({
       purl: z.string().optional().describe('Original PURL when used instead of the package tuple.'),
       vulnCount: z.number().describe('Number of vulnerabilities found.'),
     })
-    .describe('Query parameters as submitted.'),
+    .describe(
+      'Effective package coordinates after normalization, with the original PURL when supplied.',
+    ),
 });
 const PackageOutput = PackageFullOutput.partial().extend(RetrievalOutput.shape);
 
@@ -240,6 +250,9 @@ function renderPackage(
     lines.push(`## ${esc(vuln.id)}`);
     if (vuln.aliases.length > 0) {
       lines.push(`**Aliases:** ${vuln.aliases.map((a) => `\`${esc(a)}\``).join(', ')}`);
+    }
+    if (vuln.upstream !== undefined) {
+      lines.push(renderAdvisoryIds('Upstream', vuln.upstream));
     }
     const source = vuln.severitySource;
     const basis = source
@@ -309,9 +322,8 @@ export const osvQueryPackage = tool('osv_query_package', {
     'Query known vulnerabilities for a single package version using {name, ecosystem, version} or {purl, version?}; supply exactly one embedded or separate version. ' +
     'Returns all matching OSV advisories with severity (CVSS vectors), CVE aliases, affected version ranges, ' +
     'and the fixed versions listed for the queried package. ' +
-    'Use osv_list_ecosystems to validate the ecosystem string before querying — ecosystem strings are ' +
-    'case-sensitive exact matches and an invalid value returns an error, not empty results. For overflow, repeat the original input with page: overflow.page. Continue the same path with offset: page.nextOffset and revision: page.revision until nextOffset is null. Retrieve each entries[].deferred.path separately at offset zero without a revision. Do not pass the output page object as input. Set page.advisoryId to an announced ID to fetch its fields with fixes and severity for the queried package; retain advisoryId on subsequent pages. Pages are fresh lookups; restart a changed node without a revision. Transmission overflow and upstream truncated are separate; neither confirms clean.',
-  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    'Find canonical ecosystem names and the Alpine release format in osv_list_ecosystems. Known base names are case-insensitive. Preserve suffix spelling. For overflow, repeat the original input with page: overflow.page. Continue the same path with offset: page.nextOffset and revision: page.revision until nextOffset is null. Retrieve each entries[].deferred.path separately at offset zero without a revision. Do not pass the output page object as input. Set page.advisoryId to an announced ID to fetch its fields with fixes and severity for the queried package; retain advisoryId on subsequent pages. Pages are fresh lookups; restart a changed node without a revision. Transmission overflow and upstream truncated are separate; neither confirms clean.',
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
 
   input: z
     .object({
@@ -429,9 +441,22 @@ export const osvQueryPackage = tool('osv_query_package', {
     {
       reason: 'invalid_ecosystem',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'The ecosystem string is not recognized by OSV. Ecosystem names are case-sensitive exact matches.',
-      recovery:
-        'Call osv_list_ecosystems to see valid ecosystem strings, then retry with the correct value.',
+      when: 'The ecosystem identifier is not recognized by OSV.',
+      recovery: INVALID_ECOSYSTEM_RECOVERY,
+    },
+    {
+      reason: 'alpine_release_required',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'An Alpine tuple omits its release branch or an Alpine PURL does not identify a release branch.',
+      recovery: 'Retry with a release-qualified ecosystem such as Alpine:v3.17.',
+      thrownBy: 'service',
+    },
+    {
+      reason: 'invalid_maven_name',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'A Maven or Gradle package coordinate is missing its group or artifact, or is ambiguous.',
+      recovery: 'Use a tuple name formatted as groupId:artifactId.',
+      thrownBy: 'service',
     },
   ],
 
@@ -478,10 +503,7 @@ export const osvQueryPackage = tool('osv_query_package', {
 
     if (result.invalid) {
       if (input.purl !== undefined) throw ctx.fail('invalid_purl_query', result.message);
-      throw ctx.fail(
-        'invalid_ecosystem',
-        `Ecosystem "${input.ecosystem}" is not recognized by OSV.`,
-      );
+      throw ctx.fail('invalid_ecosystem', invalidEcosystemMessage(input.ecosystem));
     }
 
     ctx.log.info('OSV query complete', {
@@ -530,6 +552,7 @@ export const osvQueryPackage = tool('osv_query_package', {
           aliases: v.aliases,
           severityLabel: v.severityLabel,
           fixedVersions: v.fixedVersions,
+          ...(v.upstream === undefined ? {} : { upstream: v.upstream }),
         })),
         advisoryListComplete: true,
         truncated: full.truncated,

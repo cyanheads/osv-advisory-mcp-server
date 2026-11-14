@@ -82,6 +82,22 @@ describe('MCPB batch option', () => {
           send({ id: 2, method: 'tools/list' });
         }
         if (response.id === 2) {
+          expect(
+            Object.fromEntries(
+              response.result.tools.map(
+                (tool: { name: string; annotations: { openWorldHint: boolean } }) => [
+                  tool.name,
+                  tool.annotations.openWorldHint,
+                ],
+              ),
+            ),
+          ).toEqual({
+            osv_list_ecosystems: false,
+            osv_query_package: true,
+            osv_query_batch: true,
+            osv_query_commit: true,
+            osv_get_vulnerability: true,
+          });
           expect(response.result?.tools).toContainEqual(
             expect.objectContaining({
               name: 'osv_query_batch',

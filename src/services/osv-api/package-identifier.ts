@@ -4,13 +4,14 @@
  */
 import { validationError } from '@cyanheads/mcp-ts-core/errors';
 import { PackageURL } from 'packageurl-js';
+import { canonicalEcosystem } from './ecosystem-catalog.js';
 
 /** The two accepted package-version identifiers. */
 export type PackageIdentifier =
   | { name: string; ecosystem: string; version: string; purl?: never }
   | { purl: string; version?: string | undefined; name?: never; ecosystem?: never };
 
-/** Matcher coordinate plus original and, when normalized, wire PURL identities. */
+/** Matcher coordinate plus original PURL and optional native PURL wire identity. */
 export interface ResolvedPackage {
   ecosystem: string;
   /** Omit the separate upstream version when it was embedded in the PURL. */
@@ -18,6 +19,7 @@ export interface ResolvedPackage {
   name: string;
   purl?: string;
   version: string;
+  /** Absent when the effective coordinate must be sent as a tuple. */
   wirePurl?: string;
 }
 
@@ -42,6 +44,7 @@ const ECOSYSTEMS: Record<string, string> = {
   maven: 'Maven',
   gradle: 'Maven',
   'apk/chainguard': 'Chainguard',
+  composer: 'Packagist',
   'apk/minimos': 'MinimOS',
   'apk/wolfi': 'Wolfi',
   'deb/echo': 'Echo',
@@ -139,10 +142,31 @@ function exactVersion(version: string, ecosystem: string): string {
 
 const PEP_503_VERSION_ECOSYSTEMS = new Set(['PyPI', 'Echo:PyPI', 'Red Hat Lightwell:PyPI']);
 
-/** Resolve exact versions while preserving original package and PURL spelling for echoes. */
+function alpineReleaseRequired(): never {
+  throw validationError('Provide the Alpine release branch as Alpine:v<major>.<minor>.', {
+    reason: 'alpine_release_required',
+  });
+}
+
+function mavenName(name: string): string {
+  const parts = /^([^:/\s]+)[:/]([^:/\s]+)$/.exec(name);
+  if (!parts || parts[0].length !== name.length)
+    throw validationError('Provide the Maven name as groupId:artifactId.', {
+      reason: 'invalid_maven_name',
+    });
+  return `${parts[1]}:${parts[2]}`;
+}
+
+/** Resolve the effective query coordinate and retain the caller's original PURL for echoes. */
 export function resolvePackage(input: PackageIdentifier): ResolvedPackage {
-  if (input.purl === undefined)
-    return { ...input, version: exactVersion(input.version, input.ecosystem) };
+  if (input.purl === undefined) {
+    const ecosystem = canonicalEcosystem(input.ecosystem);
+    const version = exactVersion(input.version, ecosystem);
+    if (ecosystem === 'Alpine' || ecosystem === 'Alpine:') alpineReleaseRequired();
+    const name =
+      ecosystem === 'Maven' || ecosystem.startsWith('Maven:') ? mavenName(input.name) : input.name;
+    return { name, ecosystem, version };
+  }
   let parsed: PackageURL;
   try {
     parsed = PackageURL.fromString(input.purl);
@@ -172,35 +196,52 @@ export function resolvePackage(input: PackageIdentifier): ResolvedPackage {
     );
   }
   let name = parsed.name;
-  if (
-    parsed.namespace &&
-    ['npm', 'hex', 'swift', 'golang', 'maven', 'gradle'].includes(parsed.type)
-  ) {
-    name = `${parsed.namespace}${['maven', 'gradle'].includes(parsed.type) ? ':' : '/'}${name}`;
+  if (parsed.namespace && ['npm', 'hex', 'swift', 'golang', 'composer'].includes(parsed.type)) {
+    name = `${parsed.namespace}/${name}`;
+  }
+  if (ecosystem === 'Maven') {
+    name = mavenName(`${parsed.namespace ?? ''}:${name}`);
   }
   if (parsed.type === 'golang' && parsed.subpath) name += `/${parsed.subpath}`;
+  if (ecosystem === 'Alpine') {
+    const distro = parsed.qualifiers?.distro ?? '';
+    const branch = /^v?([0-9]+\.[0-9]+)(?:\.[0-9]+)?$/.exec(distro);
+    if (!branch || branch[0].length !== distro.length) alpineReleaseRequired();
+    return {
+      name,
+      ecosystem: `Alpine:v${branch[1]}`,
+      version,
+      purl: input.purl,
+    };
+  }
+  if (ecosystem === 'Packagist' && parsed.qualifiers?.repository_url)
+    ecosystem += `:${parsed.qualifiers.repository_url}`;
   if (ecosystem === 'Debian' && parsed.qualifiers?.distro) {
     const distro = parsed.qualifiers.distro.toLowerCase();
     ecosystem += `:${Object.hasOwn(DEBIAN_VERSIONS, distro) ? DEBIAN_VERSIONS[distro] : distro}`;
   }
   const normalizedVersion = exactVersion(version, ecosystem);
-  if (parsed.version && normalizedVersion !== version) parsed.version = normalizedVersion;
+  let wirePurl = input.purl;
+  if (parsed.version && normalizedVersion !== version) {
+    parsed.version = normalizedVersion;
+    wirePurl = parsed.toString();
+  }
   return {
     name,
     ecosystem,
     version: normalizedVersion,
     purl: input.purl,
     embeddedVersion: Boolean(parsed.version),
-    ...(parsed.version && normalizedVersion !== version ? { wirePurl: parsed.toString() } : {}),
+    wirePurl,
   };
 }
 
 /** OSV wire query identity, keeping PURL and separate-version semantics intact. */
 export function packageBody(pkg: ResolvedPackage) {
-  return pkg.purl === undefined
+  return pkg.wirePurl === undefined
     ? { package: { name: pkg.name, ecosystem: pkg.ecosystem }, version: pkg.version }
     : {
-        package: { purl: pkg.wirePurl ?? pkg.purl },
+        package: { purl: pkg.wirePurl },
         ...(pkg.embeddedVersion ? {} : { version: pkg.version }),
       };
 }
