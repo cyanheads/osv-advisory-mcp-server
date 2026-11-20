@@ -4,6 +4,7 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -92,6 +93,55 @@ describe('osvQueryBatch', () => {
     expect(contentText(reply)).toContain('truncatedRows: [2,4,5]');
   });
 
+  it('keeps Ubuntu source queries and excludes unresolved empty rows from clean results', async () => {
+    const packages = [
+      { purl: 'pkg:deb/ubuntu/libssl3@3.0.2-0ubuntu1?distro=jammy' },
+      { name: 'linux-libc-dev', ecosystem: 'Ubuntu:20.04:LTS', version: '1.0.0' },
+    ];
+    const unresolved = {
+      ...makeResult('libssl3', 'Ubuntu:22.04:LTS', '3.0.2-0ubuntu1'),
+      purl: packages[0]!.purl,
+      sourceNames: ['libssl3'],
+      sourceResolutionUnavailable: true,
+    };
+    const mapped = {
+      ...makeResult('linux-libc-dev', 'Ubuntu:20.04:LTS', '1.0.0'),
+      sourceNames: ['linux', 'linux-riscv'],
+    };
+    mockService.queryBatch.mockResolvedValueOnce([unresolved, mapped]);
+    const reply = await runToolContract(osvQueryBatch, { packages });
+    expect(reply.structuredContent).toMatchObject({
+      results: [unresolved, mapped].map((row) => ({ ...row, vulnerable: false, vulnCount: 0 })),
+      summary: { cleanCount: 1, errorCount: 0, sourceResolutionUnavailableRowRanges: '0' },
+    });
+    const text = contentText(reply);
+    expect(text).toContain('Ubuntu source resolution unavailable');
+    expect(text).toContain('sourceResolutionUnavailableRowRanges: 0');
+    expect(text).not.toContain('package(s) clean — no known vulnerabilities');
+    expect(text).toContain('linux-riscv');
+    expect(text).not.toMatch(/libssl3.*— clean/);
+
+    mockService.queryBatch.mockResolvedValueOnce([mapped]);
+    const source = await runToolContract(osvQueryBatch, {
+      packages,
+      page: { path: '/results/1/sourceNames/1' },
+    });
+    expect(source.structuredContent).toMatchObject({ page: { text: 'linux-riscv' } });
+    expect(contentText(source)).toContain('linux-riscv');
+
+    mockService.queryBatch.mockResolvedValueOnce([unresolved]);
+    const row = await runToolContract(osvQueryBatch, { packages, page: { path: '/results/0' } });
+    expect(row.structuredContent).toMatchObject({
+      page: {
+        entries: expect.arrayContaining([
+          { key: 'sourceResolutionUnavailable', value: true },
+          { key: 'sourceNames', value: ['libssl3'] },
+        ]),
+      },
+    });
+    expect(contentText(row)).toContain('sourceResolutionUnavailable');
+  });
+
   it.each(['clean', 'vulnerable', 'incomplete', 'error'] as const)(
     'renders caller coordinates literally in %s rows',
     async (outcome) => {
@@ -126,7 +176,7 @@ describe('osvQueryBatch', () => {
     },
   );
 
-  it.each(['vulnerable-truncated', 'error-truncated', 'clean', 'tail'] as const)(
+  it.each(['vulnerable-truncated', 'error-truncated', 'clean', 'tail', 'unresolved', 'fragmented'])(
     'keeps all 1000-row %s memberships within the assembled budget',
     async (kind) => {
       const packages = Array.from({ length: 1000 }, (_, i) => ({
@@ -141,19 +191,25 @@ describe('osvQueryBatch', () => {
         severityLabel: 'HIGH',
         fixedVersions: [],
       };
+      const unresolved = kind === 'unresolved' || kind === 'fragmented';
       mockService.queryBatch.mockImplementation(async (submitted: typeof packages) =>
-        submitted.map((pkg) =>
-          makeResult(
+        submitted.map((pkg) => ({
+          ...makeResult(
             pkg.name,
             pkg.ecosystem,
             pkg.version,
-            kind === 'vulnerable-truncated' || (kind === 'tail' && Number(pkg.name.slice(3)) >= 990)
+            kind === 'vulnerable-truncated' ||
+              unresolved ||
+              (kind === 'tail' && Number(pkg.name.slice(3)) >= 990)
               ? [vuln]
               : [],
             kind === 'error-truncated' ? 'Failed' : null,
-            kind.endsWith('truncated'),
+            kind.endsWith('truncated') || unresolved,
           ),
-        ),
+          ...(unresolved && (kind === 'unresolved' || Number(pkg.name.slice(3)) % 3 < 2)
+            ? { sourceNames: [pkg.name], sourceResolutionUnavailable: true }
+            : {}),
+        })),
       );
       const reply = await runToolContract(osvQueryBatch, { packages });
       expect(reply.isError).not.toBe(true);
@@ -162,14 +218,29 @@ describe('osvQueryBatch', () => {
       const indices = Array.from({ length: 1000 }, (_, i) => i);
       expect(output.summary).toMatchObject({
         vulnerableRows:
-          kind === 'vulnerable-truncated' ? indices : kind === 'tail' ? indices.slice(990) : [],
+          kind === 'vulnerable-truncated' || unresolved
+            ? indices
+            : kind === 'tail'
+              ? indices.slice(990)
+              : [],
         errorRows: kind === 'error-truncated' ? indices : [],
-        truncatedRows: kind.endsWith('truncated') ? indices : [],
+        truncatedRows: kind.endsWith('truncated') || unresolved ? indices : [],
       });
       const parsed = scanMarkdown(contentText(reply));
       expect(parsed.literalText).toContain(JSON.stringify(output.summary!.vulnerableRows));
       expect(parsed.literalText).toContain(JSON.stringify(output.summary!.errorRows));
       expect(parsed.literalText).toContain(JSON.stringify(output.summary!.truncatedRows));
+      if (unresolved) {
+        const ranges =
+          kind === 'unresolved'
+            ? '0-999'
+            : [
+                ...Array.from({ length: 333 }, (_, index) => `${index * 3}-${index * 3 + 1}`),
+                '999',
+              ].join(',');
+        expect(output.summary?.sourceResolutionUnavailableRowRanges).toBe(ranges);
+        expect(parsed.literalText).toContain(`"sourceResolutionUnavailableRowRanges":"${ranges}"`);
+      }
       const selected = await runToolContract(osvQueryBatch, {
         packages,
         page: { path: '/results/999' },
@@ -894,7 +965,7 @@ describe('osvQueryBatch over a real service and stubbed OSV HTTP', () => {
       osvApiModule.initOsvApiService({ timeoutMs: 60_000 });
     });
 
-    function stubDeadlineFetch(checkpoint = true) {
+    function stubDeadlineFetch(checkpoint = true, malformedDetail = false) {
       const stalled = Promise.withResolvers<void>();
       const queries: Array<{ name: string; token?: string }> = [];
       vi.stubGlobal(
@@ -924,6 +995,7 @@ describe('osvQueryBatch over a real service and stubbed OSV HTTP', () => {
           }
           if (path.endsWith(first.id)) return Response.json(first);
           expect(path).toBe(`/v1/vulns/${second.id}`);
+          if (malformedDetail) return Response.json({});
           return new Promise<Response>((_resolve, reject) => {
             init.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
               once: true,
@@ -1011,6 +1083,80 @@ describe('osvQueryBatch over a real service and stubbed OSV HTTP', () => {
       expect(page?.text).toContain('50-second deadline');
       expect(contentText(reply)).toContain('50-second deadline');
       expect(nextCursor).toBeUndefined();
+    });
+
+    it('returns a row and its error when advisory hydration fails', async () => {
+      stubDeadlineFetch(false, true);
+      const message = `OSV could not retrieve advisory ${second.id}.`;
+      const reply = await runToolContract(osvQueryBatch, {
+        packages,
+        page: { path: '/results/1' },
+      });
+      expect(reply.isError).not.toBe(true);
+      const { page } = osvQueryBatch.output.parse(reply.structuredContent);
+      expect(page?.entries).toContainEqual({ key: 'error', value: message });
+      expect(page?.entries).toContainEqual({ key: 'vulns', value: [] });
+      expect(contentText(reply)).toContain(message);
+
+      const badPath = await runToolContract(osvQueryBatch, {
+        packages,
+        page: { path: '/results/1/unknown' },
+      });
+      expect(badPath).toMatchObject({
+        isError: true,
+        structuredContent: { error: { data: { reason: 'invalid_page_path' } } },
+      });
+      expect(contentText(badPath)).toContain('Use an announced pointer');
+    });
+
+    it('returns a timeout for a nested advisory field when hydration exceeds the deadline', async () => {
+      const { stalled } = stubDeadlineFetch(false);
+      const pending = runToolContract(osvQueryBatch, {
+        packages,
+        page: { path: '/results/1/vulns/0/id' },
+      });
+      await stalled;
+      await vi.advanceTimersByTimeAsync(50_000);
+      const reply = await pending;
+      expect(reply).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: JsonRpcErrorCode.Timeout } },
+      });
+      expect(contentText(reply)).toContain('50-second deadline');
+    });
+
+    it('returns upstream failure for a nested advisory field when its detail is malformed', async () => {
+      stubDeadlineFetch(false, true);
+      const reply = await runToolContract(osvQueryBatch, {
+        packages,
+        page: { path: '/results/1/vulns/0/id' },
+      });
+      expect(reply).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: JsonRpcErrorCode.ServiceUnavailable } },
+      });
+      expect(contentText(reply)).toContain(`OSV could not retrieve advisory ${second.id}.`);
+    });
+
+    it('keeps the invalid pointer recovery when an advisory does not exist for a clean row', async () => {
+      vi.stubGlobal('fetch', async (url: string) => {
+        expect(new URL(url).pathname).toBe('/v1/querybatch');
+        return Response.json({ results: [{}] });
+      });
+      const reply = await runToolContract(osvQueryBatch, {
+        packages,
+        page: { path: '/results/1/vulns/0/id' },
+      });
+      expect(reply).toMatchObject({
+        isError: true,
+        structuredContent: {
+          error: {
+            code: JsonRpcErrorCode.ValidationError,
+            data: { reason: 'invalid_page_path' },
+          },
+        },
+      });
+      expect(contentText(reply)).toContain('Use an announced pointer');
     });
 
     it('propagates genuine caller cancellation during hydration', async () => {

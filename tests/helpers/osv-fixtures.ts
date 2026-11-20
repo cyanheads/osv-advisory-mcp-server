@@ -8,6 +8,11 @@ import { readFileSync } from 'node:fs';
 import { vi } from 'vitest';
 import type { RawOsvVulnerability } from '@/services/osv-api/types.js';
 
+function emptyUbuntuSourceMappings(init?: RequestInit): Response {
+  const { binary_names }: { binary_names: string[] } = JSON.parse(String(init?.body));
+  return Response.json({ results: binary_names.map(() => ({})) });
+}
+
 /** Load a saved live OSV record (`GET /v1/vulns/{id}` shape) by ID. */
 export function loadOsvRecord(id: string): RawOsvVulnerability {
   return JSON.parse(
@@ -37,8 +42,12 @@ export function captureOsvQueries(records: RawOsvVulnerability[]): QueryRequestB
   vi.stubGlobal(
     'fetch',
     vi.fn((url: string | URL, init?: RequestInit) => {
-      if (new URL(String(url)).pathname.startsWith('/v1/vulns/')) {
-        const id = decodeURIComponent(new URL(String(url)).pathname.slice('/v1/vulns/'.length));
+      const path = new URL(String(url)).pathname;
+      if (path === '/v1experimental/ubuntu/binary-to-source') {
+        return Promise.resolve(emptyUbuntuSourceMappings(init));
+      }
+      if (path.startsWith('/v1/vulns/')) {
+        const id = decodeURIComponent(path.slice('/v1/vulns/'.length));
         return Promise.resolve(Response.json(records.find((record) => record.id === id)));
       }
       const body = JSON.parse(String(init?.body));
@@ -72,6 +81,9 @@ export function stubOsvApi(responders: {
     'fetch',
     vi.fn((url: string | URL, init?: RequestInit) => {
       const path = new URL(String(url)).pathname;
+      if (path === '/v1experimental/ubuntu/binary-to-source') {
+        return Promise.resolve(emptyUbuntuSourceMappings(init));
+      }
       if (path === '/v1/querybatch' && responders.query) {
         const body = JSON.parse(String(init?.body)) as { queries: QueryRequestBody[] };
         return Promise.resolve(

@@ -201,6 +201,14 @@ const PackageFullOutput = z.object({
       ecosystem: z.string().describe('Queried ecosystem.'),
       version: z.string().describe('Queried version.'),
       purl: z.string().optional().describe('Original PURL when used instead of the package tuple.'),
+      sourceNames: z
+        .array(z.string())
+        .optional()
+        .describe('Source package targets for a release-qualified Ubuntu input.'),
+      sourceResolutionUnavailable: z
+        .literal(true)
+        .optional()
+        .describe('The Ubuntu mapping was unavailable and only the supplied name was queried.'),
       vulnCount: z.number().describe('Number of vulnerabilities found.'),
     })
     .describe(
@@ -208,6 +216,8 @@ const PackageFullOutput = z.object({
     ),
 });
 const PackageOutput = PackageFullOutput.partial().extend(RetrievalOutput.shape);
+const SOURCE_RESOLUTION_UNAVAILABLE =
+  'Ubuntu source resolution was unavailable. Only the supplied name was checked, so an empty result is inconclusive.';
 
 function renderPackage(
   result: z.infer<typeof PackageOutput>,
@@ -227,9 +237,18 @@ function renderPackage(
     `**Package:** ${callerCode(queryMeta.package)} @ ${callerCode(queryMeta.version)} (${escapeMarkdownInline(queryMeta.ecosystem)}) — ${queryMeta.vulnCount} vuln(s)\n`,
   );
   if (queryMeta.purl !== undefined) lines.push(`**PURL:** ${escapeMarkdownInline(queryMeta.purl)}`);
+  if (queryMeta.sourceNames !== undefined) {
+    lines.push(
+      `**Ubuntu source names:** ${queryMeta.sourceNames.map(escapeAdvisoryInline).join(', ')}`,
+    );
+  }
+  if (queryMeta.sourceResolutionUnavailable) lines.push(SOURCE_RESOLUTION_UNAVAILABLE);
 
   if (result.vulns.length === 0) {
-    if (!result.continuationExhausted)
+    if (
+      !result.continuationExhausted &&
+      (result.truncated || !queryMeta.sourceResolutionUnavailable)
+    )
       lines.push(
         result.truncated
           ? '⚠️ **Results truncated** — additional OSV pages remain. Continue with nextCursor.'
@@ -319,7 +338,7 @@ const PackagePageInput = PageInput.extend({
 
 export const osvQueryPackage = tool('osv_query_package', {
   description:
-    'Query known vulnerabilities for a single package version using {name, ecosystem, version} or {purl, version?}; supply exactly one embedded or separate version. ' +
+    'Query known vulnerabilities for a single package version using {name, ecosystem, version} or {purl, version?}; supply exactly one embedded or separate version. Release-qualified Ubuntu names are resolved to the source packages OSV indexes. ' +
     'Returns all matching OSV advisories with severity (CVSS vectors), CVE aliases, affected version ranges, ' +
     'and the fixed versions listed for the queried package. ' +
     'Find canonical ecosystem names and the Alpine release format in osv_list_ecosystems. Known base names are case-insensitive. Preserve suffix spelling. For overflow, repeat the original input with page: overflow.page. Continue the same path with offset: page.nextOffset and revision: page.revision until nextOffset is null. Retrieve each entries[].deferred.path separately at offset zero without a revision. Do not pass the output page object as input. Set page.advisoryId to an announced ID to fetch its fields with fixes and severity for the queried package; retain advisoryId on subsequent pages. Pages are fresh lookups; restart a changed node without a revision. Transmission overflow and upstream truncated are separate; neither confirms clean.',
@@ -486,13 +505,14 @@ export const osvQueryPackage = tool('osv_query_package', {
     });
     const service = getOsvApiService();
     if (input.page?.advisoryId) {
-      if (request.cursor !== undefined) service.validatePackageCursor(resolved, request.cursor);
-      const advisory = await service.getPackageVulnerability(
+      const { advisory, sourceResolutionUnavailable } = await service.getPackageVulnerability(
         input.page.advisoryId,
-        { name: input.name, ecosystem: input.ecosystem },
+        resolved,
         ctx,
+        request.cursor,
       );
       if (!advisory) throw ctx.fail('advisory_not_found');
+      if (sourceResolutionUnavailable) ctx.enrich.notice(SOURCE_RESOLUTION_UNAVAILABLE);
       return pageNode(projectAdvisory(advisory), input.page, measurePackage);
     }
     const result =
@@ -522,7 +542,7 @@ export const osvQueryPackage = tool('osv_query_package', {
     const enrichment: { notice?: string; effectiveQuery?: string } = {};
     const exhausted =
       request.cursor !== undefined && !result.truncated && result.vulns.length === 0;
-    if (result.vulns.length === 0 && !exhausted) {
+    if (result.vulns.length === 0 && !exhausted && !result.sourceResolutionUnavailable) {
       // A truncated empty page is NOT a clean result — never emit the false-clean notice.
       enrichment.notice = result.truncated
         ? `Results for ${input.name}@${input.version} (${input.ecosystem}) are INCOMPLETE. More OSV pages remain. Continue with nextCursor.`
@@ -540,6 +560,10 @@ export const osvQueryPackage = tool('osv_query_package', {
         ecosystem: input.ecosystem,
         version: input.version,
         ...(input.purl === undefined ? {} : { purl: input.purl }),
+        ...(result.sourceNames === undefined ? {} : { sourceNames: result.sourceNames }),
+        ...(result.sourceResolutionUnavailable
+          ? { sourceResolutionUnavailable: true as const }
+          : {}),
         vulnCount: result.vulns.length,
       },
     };

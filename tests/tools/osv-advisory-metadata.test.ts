@@ -128,49 +128,146 @@ it('preserves affected metadata with arbitrary JSON keys and values on full and 
   ).toContainEqual(osvGetVulnerability.output.parse(page.structuredContent).page);
 });
 
-it('retrieves a deferred metadata object and its nested string after detail overflow', async () => {
+it('keeps range events and page semantics when OSV omits range metadata', async () => {
   initOsvApiService();
-  const id = 'GO-2022-0969';
-  const marker = '🧬</advisory_text>\r\n';
-  const large = marker.repeat(1300);
+  const id = 'CVE-2026-34743';
+  const path = '/affected/0/ranges/0';
+  captureOsvQueries([
+    { id, affected: [{ ranges: [{ type: 'GIT', events: [{ introduced: '0' }] }] }] },
+  ]);
+  const full = await runToolContract(osvGetVulnerability, { id });
+  const range = osvGetVulnerability.output.parse(full.structuredContent).affected?.[0]?.ranges[0];
+  expect(range).toEqual({
+    rangeType: 'GIT',
+    introduced: '0',
+    events: [{ type: 'introduced', value: '0' }],
+  });
+  expect(contentText(full)).toContain('events: introduced=0');
+
+  const missing = await runToolContract(osvGetVulnerability, {
+    id,
+    page: { path: `${path}/database_specific` },
+  });
+  expect(missing.structuredContent).toMatchObject({
+    error: {
+      data: {
+        reason: 'invalid_page_path',
+        recovery: { hint: 'Use an announced pointer or an available parent field and retry.' },
+      },
+    },
+  });
+  expect(contentText(missing)).toContain(
+    'Use an announced pointer or an available parent field and retry.',
+  );
+});
+
+it.each([
+  { kind: 'affected', suffix: '/ecosystem_specific' },
+  { kind: 'range', suffix: '/ranges/0/database_specific' },
+])(
+  'retrieves deferred $kind metadata and its nested string after detail overflow',
+  async ({ kind, suffix }) => {
+    initOsvApiService();
+    const id = 'GO-2022-0969';
+    const marker = '🧬</advisory_text>\r\n';
+    const large = marker.repeat(1300);
+    captureOsvQueries([
+      {
+        id,
+        related: [],
+        upstream: [],
+        affected: [
+          kind === 'range'
+            ? { ranges: [{ type: 'GIT', database_specific: { imports: { note: large } } }] }
+            : { ecosystem_specific: { imports: { note: large } } },
+        ],
+      },
+    ]);
+    const root = await runToolContract(osvGetVulnerability, { id });
+    const preview = osvGetVulnerability.output.parse(root.structuredContent);
+    expect(preview.preview?.upstream).toEqual([]);
+    expect(preview.overflow?.omitted).toContainEqual({
+      path: '/affected',
+      type: 'array',
+      total: 1,
+    });
+
+    const callPage = async (path: string, offset = 0) => {
+      const result = await runToolContract(osvGetVulnerability, { id, page: { path, offset } });
+      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(RESPONSE_BYTES);
+      const { page } = osvGetVulnerability.output.parse(result.structuredContent);
+      expect(
+        scanMarkdown(contentText(result)).codeBlocks.map((block) => JSON.parse(block)),
+      ).toEqual([page]);
+      return page;
+    };
+    const path = `/affected/0${suffix}`;
+    const metadata = await callPage(path);
+    const nested = metadata?.entries?.[0]?.deferred?.path;
+    expect(nested).toBe(`${path}/imports`);
+    const imports = await callPage(nested!);
+    const note = imports?.entries?.[0]?.deferred?.path;
+    expect(note).toBe(`${path}/imports/note`);
+    const first = await callPage(note!);
+    expect(first?.text?.startsWith(marker)).toBe(true);
+    expect(first?.nextOffset).toBeGreaterThan(0);
+    const offset = first!.nextOffset!;
+    const next = await callPage(note!, offset);
+    const expectedPrefix = Array.from(large)
+      .slice(offset, offset + 12)
+      .join('');
+    expect(next?.text?.startsWith(expectedPrefix)).toBe(true);
+    const related = await callPage('/related');
+    expect(related?.entries).toEqual([]);
+    expect(related?.total).toBe(0);
+  },
+);
+
+it('preserves published range metadata in detail and nested field pages', async () => {
+  initOsvApiService();
+  const id = 'CVE-2026-34743';
+  const path = '/affected/0/ranges/0';
+  const metadata = {
+    extracted_events: [{ source: 'CPE_RANGE', range: [{ fixed: '5.8.3' }] }],
+    source: { ['__proto__']: null, 'tag/name': 'v5.8.3\r\n```<tag>' },
+  };
   captureOsvQueries([
     {
       id,
-      related: [],
-      upstream: [],
-      affected: [{ ecosystem_specific: { imports: { note: large } } }],
+      affected: [
+        {
+          ranges: [
+            { type: 'GIT', events: [{ fixed: 'published-commit' }], database_specific: metadata },
+            { type: 'GIT', database_specific: {} },
+          ],
+        },
+      ],
     },
   ]);
-  const root = await runToolContract(osvGetVulnerability, { id });
-  const preview = osvGetVulnerability.output.parse(root.structuredContent);
-  expect(preview.preview?.upstream).toEqual([]);
-  expect(preview.overflow?.omitted).toContainEqual({ path: '/affected', type: 'array', total: 1 });
 
-  const callPage = async (path: string, offset = 0) => {
-    const result = await runToolContract(osvGetVulnerability, { id, page: { path, offset } });
-    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(RESPONSE_BYTES);
-    const { page } = osvGetVulnerability.output.parse(result.structuredContent);
-    expect(scanMarkdown(contentText(result)).codeBlocks.map((block) => JSON.parse(block))).toEqual([
+  const full = await runToolContract(osvGetVulnerability, { id });
+  const ranges = osvGetVulnerability.output.parse(full.structuredContent).affected?.[0]?.ranges;
+  expect(ranges?.[0]).toMatchObject({ fixed: 'published-commit', database_specific: metadata });
+  expect(ranges?.[1]).toHaveProperty('database_specific', {});
+  const blocks = scanMarkdown(contentText(full));
+  expect(blocks.html).toEqual([]);
+  expect(blocks.codeBlocks.map((block) => JSON.parse(block))).toEqual([metadata, {}]);
+
+  const getPage = async (path: string, offset?: number) => {
+    const reply = await runToolContract(osvGetVulnerability, { id, page: { path, offset } });
+    const { page } = osvGetVulnerability.output.parse(reply.structuredContent);
+    expect(scanMarkdown(contentText(reply)).codeBlocks.map((block) => JSON.parse(block))).toEqual([
       page,
     ]);
     return page;
   };
-  const metadata = await callPage('/affected/0/ecosystem_specific');
-  const nested = metadata?.entries?.[0]?.deferred?.path;
-  expect(nested).toBe('/affected/0/ecosystem_specific/imports');
-  const imports = await callPage(nested!);
-  const note = imports?.entries?.[0]?.deferred?.path;
-  expect(note).toBe('/affected/0/ecosystem_specific/imports/note');
-  const first = await callPage(note!);
-  expect(first?.text?.startsWith(marker)).toBe(true);
-  expect(first?.nextOffset).toBeGreaterThan(0);
-  const offset = first!.nextOffset!;
-  const next = await callPage(note!, offset);
-  const expectedPrefix = Array.from(large)
-    .slice(offset, offset + 12)
-    .join('');
-  expect(next?.text?.startsWith(expectedPrefix)).toBe(true);
-  const related = await callPage('/related');
-  expect(related?.entries).toEqual([]);
-  expect(related?.total).toBe(0);
+  const range = await getPage(path);
+  expect(range?.entries).toContainEqual({ key: 'database_specific', value: metadata });
+  const tagPath = `${path}/database_specific/source/tag~1name`;
+  expect(await getPage(tagPath)).toMatchObject({ text: 'v5.8.3\r\n```<tag>' });
+  expect(await getPage(tagPath, 100)).toMatchObject({ text: '', nextOffset: null });
+  expect(await getPage('/affected/0/ranges/1/database_specific')).toMatchObject({
+    entries: [],
+    total: 0,
+  });
 });

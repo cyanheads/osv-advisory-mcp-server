@@ -16,7 +16,15 @@ import {
   type ResolvedPackage,
   resolvePackage,
 } from './package-identifier.js';
-import { decodeQueryCursor, encodeQueryCursor, invalidCursor } from './query-cursor.js';
+import {
+  decodePackageCursor,
+  decodeQueryCursor,
+  encodeQueryCursor,
+  encodeSourceCursor,
+  invalidCursor,
+  type PackageContinuation,
+  type SourceCheckpoint,
+} from './query-cursor.js';
 import { deriveSeverity } from './severity.js';
 import type {
   BatchVulnBrief,
@@ -32,6 +40,11 @@ import type {
   RawOsvSeverity,
   RawOsvVulnerability,
 } from './types.js';
+import {
+  resolveUbuntuSources,
+  type UbuntuSourceResolution,
+  ubuntuMappingRelease,
+} from './ubuntu-source-resolution.js';
 
 const OSV_BASE_URL = 'https://api.osv.dev';
 
@@ -102,6 +115,15 @@ interface QueryFindings<T> {
   truncated: boolean;
   vulns: T[];
 }
+
+interface BatchTarget {
+  error: McpError | string | null;
+  pageBudget: { remaining: number };
+  pages: Array<{ ids: string[]; nextToken: string | undefined }>;
+  pkg: ResolvedPackage;
+}
+
+const MAX_OSV_BATCH_QUERIES = 1000;
 
 /** Validate positional preflight records before missing fields can be interpreted as clean. */
 const BatchResponseSchema = z.object({
@@ -224,14 +246,11 @@ function normalizeVuln(
     ...(a.database_specific === undefined ? {} : { database_specific: a.database_specific }),
     versions: a.versions ?? [],
     ranges: (a.ranges ?? []).map((r) => {
-      const out: {
-        rangeType: string;
-        introduced?: string;
-        fixed?: string;
-        lastAffected?: string;
-        repo?: string;
-        events?: OsvRangeEvent[];
-      } = { rangeType: r.type ?? '', events: extractEvents(r.events) };
+      const out: OsvVulnerability['affected'][number]['ranges'][number] = {
+        rangeType: r.type ?? '',
+        events: extractEvents(r.events),
+        ...(r.database_specific === undefined ? {} : { database_specific: r.database_specific }),
+      };
       for (const evt of r.events ?? []) {
         if (evt.introduced !== undefined) out.introduced = evt.introduced;
         if (evt.fixed !== undefined) out.fixed = evt.fixed;
@@ -274,8 +293,13 @@ function normalizeVuln(
 function normalizePackageVuln(
   raw: RawOsvVulnerability,
   query: PackageQuery,
+  sourceNames?: string[],
 ): OsvPackageVulnerability {
-  const matching = (raw.affected ?? []).filter((a) => matchesQueriedPackage(a.package, query));
+  const matching = (raw.affected ?? []).filter((a) =>
+    sourceNames === undefined
+      ? matchesQueriedPackage(a.package, query)
+      : sourceNames.some((name) => matchesQueriedPackage(a.package, { ...query, name })),
+  );
   return {
     ...normalizeVuln(raw, matching),
     fixedVersions: extractFixedVersions(matching),
@@ -417,14 +441,20 @@ export class OsvApiService {
   }
 
   /** Query a full Git commit, retaining record-wide severity and source ranges. */
-  queryCommit(
+  async queryCommit(
     commit: string,
     ctx: Context,
     cursor?: string,
   ): Promise<QueryFindings<OsvVulnerability> | { invalid: true; message: string }> {
-    return this.queryPages({ commit }, (record) => normalizeVuln(record), ctx, cursor, {
-      commit: commit.toLowerCase(),
-    });
+    const identity = { commit: commit.toLowerCase() };
+    const token = cursor === undefined ? undefined : decodeQueryCursor(identity, cursor);
+    return await this.queryPages(
+      { commit },
+      (record) => normalizeVuln(record),
+      ctx,
+      token,
+      identity,
+    );
   }
 
   /**
@@ -441,32 +471,169 @@ export class OsvApiService {
     identifier?: ResolvedPackage,
     cursor?: string,
   ): Promise<
-    | (QueryFindings<OsvPackageVulnerability> & { invalid: false })
+    | (QueryFindings<OsvPackageVulnerability> &
+        Partial<UbuntuSourceResolution> & { invalid: false })
     | { invalid: true; message: string }
   > {
+    const pkg = identifier ?? { name, ecosystem, version };
+    const body = packageBody(pkg);
+    const continuation = cursor === undefined ? undefined : decodePackageCursor(body, cursor);
+    if (ubuntuMappingRelease(ecosystem) && continuation?.version !== 1) {
+      return this.queryUbuntuPackage(pkg, ctx, continuation);
+    }
+    if (continuation?.version === 2) throw invalidCursor();
     const query: PackageQuery = { name, ecosystem };
     const result = await this.queryPages(
-      packageBody(identifier ?? { name, ecosystem, version }),
+      body,
       (record) => normalizePackageVuln(record, query),
       ctx,
-      cursor,
+      continuation?.token,
     );
     return 'invalid' in result ? result : { ...result, invalid: false };
+  }
+
+  private resolveUbuntu(packages: ResolvedPackage[], ctx: Context) {
+    return resolveUbuntuSources(
+      packages,
+      (body) =>
+        postJson<unknown>('/v1experimental/ubuntu/binary-to-source', body, this.timeoutMs, ctx),
+      ctx.signal,
+    );
+  }
+
+  private async ubuntuPackageResolution(
+    pkg: ResolvedPackage,
+    ctx: Context,
+    continuation?: Extract<PackageContinuation, { version: 2 }>,
+  ): Promise<UbuntuSourceResolution> {
+    if (!ubuntuMappingRelease(pkg.ecosystem)) throw invalidCursor();
+    if (
+      continuation?.sourceResolutionUnavailable &&
+      continuation.sources.length === 1 &&
+      continuation.sources[0]?.name === pkg.name
+    ) {
+      return { sourceNames: [pkg.name], sourceResolutionUnavailable: true };
+    }
+    if (continuation?.sourceResolutionUnavailable) throw invalidCursor();
+    const resolutions = await this.resolveUbuntu([pkg], ctx);
+    const resolution = resolutions.get(pkg);
+    if (resolution instanceof McpError) throw resolution;
+    if (!resolution) throw new Error('Missing resolution for release-qualified Ubuntu package.');
+    if (continuation) {
+      if (resolution.sourceResolutionUnavailable) {
+        throw serviceUnavailable('Ubuntu source resolution is required to resume this OSV cursor.');
+      }
+      if (
+        continuation.sources.length !== resolution.sourceNames.length ||
+        continuation.sources.some(({ name }, index) => name !== resolution.sourceNames[index])
+      ) {
+        throw invalidCursor();
+      }
+    }
+    return resolution;
+  }
+
+  private async queryUbuntuPackage(
+    pkg: ResolvedPackage,
+    ctx: Context,
+    continuation?: Extract<PackageContinuation, { version: 2 }>,
+  ) {
+    const deadline = startQueryDeadline(ctx);
+    const records = new Map<string, RawOsvVulnerability>();
+    const originalBody = packageBody(pkg);
+    try {
+      const { sourceNames, sourceResolutionUnavailable } = await this.ubuntuPackageResolution(
+        pkg,
+        deadline.ctx,
+        continuation,
+      );
+      const sources: SourceCheckpoint[] =
+        continuation?.sources ?? sourceNames.map((name) => ({ name }));
+      let completed = false;
+      const pageBudget = { remaining: this.maxQueryPages };
+      for (const source of sources) {
+        if (pageBudget.remaining === 0) break;
+        if (source.token === null) continue;
+        const body = packageBody({
+          name: source.name,
+          ecosystem: pkg.ecosystem,
+          version: pkg.version,
+        });
+        try {
+          const result = await this.fetchQueryPages(
+            body,
+            (record) => record,
+            ctx,
+            source.token,
+            deadline,
+            pageBudget,
+          );
+          if ('invalid' in result) return result;
+          for (const record of result.vulns) {
+            if (!record.id) throw serviceUnavailable('OSV API returned an advisory without an ID.');
+            records.set(record.id, record);
+          }
+          source.token = result.nextToken ?? null;
+          completed = true;
+        } catch (error) {
+          ctx.signal.throwIfAborted();
+          if (!deadline.expired() || !completed) throw error;
+          break;
+        }
+      }
+      const truncated = sources.some(({ token }) => token !== null);
+      return {
+        invalid: false as const,
+        vulns: [...records.values()].map((record) =>
+          normalizePackageVuln(record, pkg, sourceNames),
+        ),
+        truncated,
+        sourceNames,
+        ...(sourceResolutionUnavailable ? { sourceResolutionUnavailable } : {}),
+        ...(truncated
+          ? { nextCursor: encodeSourceCursor(originalBody, sources, sourceResolutionUnavailable) }
+          : {}),
+      };
+    } catch (error) {
+      ctx.signal.throwIfAborted();
+      if (deadline.expired()) throw timeout(deadline.reason.message, {}, { cause: error });
+      throw error;
+    } finally {
+      deadline.stop();
+    }
   }
 
   private async queryPages<T>(
     body: object,
     normalize: (record: RawOsvVulnerability) => T,
     ctx: Context,
-    cursor?: string,
+    token?: string,
     identity = body,
   ): Promise<QueryFindings<T> | { invalid: true; message: string }> {
-    let pageToken = cursor === undefined ? undefined : decodeQueryCursor(identity, cursor);
-    const deadline = startQueryDeadline(ctx);
+    const result = await this.fetchQueryPages(body, normalize, ctx, token);
+    if ('invalid' in result) return result;
+    const { vulns, nextToken } = result;
+    return {
+      vulns,
+      truncated: nextToken !== undefined,
+      ...(nextToken === undefined ? {} : { nextCursor: encodeQueryCursor(identity, nextToken) }),
+    };
+  }
+
+  private async fetchQueryPages<T>(
+    body: object,
+    normalize: (record: RawOsvVulnerability) => T,
+    ctx: Context,
+    token?: string,
+    operationDeadline?: QueryDeadline,
+    pageBudget = { remaining: this.maxQueryPages },
+  ): Promise<{ vulns: T[]; nextToken: string | undefined } | { invalid: true; message: string }> {
+    let pageToken = token;
+    const deadline = operationDeadline ?? startQueryDeadline(ctx);
     const vulns: T[] = [];
     let completed = 0;
     try {
-      for (; completed < this.maxQueryPages; completed++) {
+      for (; pageBudget.remaining > 0; completed++) {
         const { status, data } = await postJson<RawOsvQueryResponse>(
           '/v1/query',
           { ...body, ...(pageToken ? { page_token: pageToken } : {}) },
@@ -482,6 +649,7 @@ export class OsvApiService {
           throw serviceUnavailable(`OSV API returned HTTP ${status}.`, { status });
         const raw = data as RawOsvQueryResponse;
         for (const record of raw.vulns ?? []) vulns.push(normalize(record));
+        pageBudget.remaining--;
         pageToken = raw.next_page_token || undefined;
         if (!pageToken) break;
       }
@@ -490,18 +658,9 @@ export class OsvApiService {
       if (!deadline.expired()) throw error;
       if (!completed || !pageToken) throw timeout(deadline.reason.message, {}, { cause: error });
     } finally {
-      deadline.stop();
+      if (operationDeadline === undefined) deadline.stop();
     }
-    return {
-      vulns,
-      truncated: pageToken !== undefined,
-      ...(pageToken === undefined ? {} : { nextCursor: encodeQueryCursor(identity, pageToken) }),
-    };
-  }
-
-  /** Check a package cursor before a direct advisory lookup on a resumed result. */
-  validatePackageCursor(pkg: ResolvedPackage, cursor: string): void {
-    decodeQueryCursor(packageBody(pkg), cursor);
+    return { vulns, nextToken: pageToken };
   }
 
   /**
@@ -527,17 +686,38 @@ export class OsvApiService {
   /** Fetch one advisory and retain the original package matcher for fixes and severity. */
   async getPackageVulnerability(
     id: string,
-    query: PackageQuery,
+    query: ResolvedPackage,
     ctx: Context,
-  ): Promise<OsvPackageVulnerability | null> {
-    const { status, data } = await getJson<RawOsvVulnerability>(
-      `/v1/vulns/${encodeURIComponent(id)}`,
-      this.timeoutMs,
-      ctx,
-    );
-    if (status === 404) return null;
-    if (status !== 200) throw serviceUnavailable('OSV advisory lookup failed.', { status });
-    return normalizePackageVuln(data as RawOsvVulnerability, query);
+    cursor?: string,
+  ): Promise<{ advisory: OsvPackageVulnerability | null } & Partial<UbuntuSourceResolution>> {
+    const continuation =
+      cursor === undefined ? undefined : decodePackageCursor(packageBody(query), cursor);
+    const deadline = startQueryDeadline(ctx);
+    try {
+      const resolution =
+        continuation?.version === 2
+          ? await this.ubuntuPackageResolution(query, deadline.ctx, continuation)
+          : continuation === undefined && ubuntuMappingRelease(query.ecosystem)
+            ? await this.ubuntuPackageResolution(query, deadline.ctx)
+            : undefined;
+      const { status, data } = await getJson<RawOsvVulnerability>(
+        `/v1/vulns/${encodeURIComponent(id)}`,
+        this.timeoutMs,
+        deadline.ctx,
+      );
+      if (status === 404) return { advisory: null };
+      if (status !== 200) throw serviceUnavailable('OSV advisory lookup failed.', { status });
+      return {
+        advisory: normalizePackageVuln(data as RawOsvVulnerability, query, resolution?.sourceNames),
+        ...resolution,
+      };
+    } catch (error) {
+      ctx.signal.throwIfAborted();
+      if (deadline.expired()) throw timeout(deadline.reason.message, {}, { cause: error });
+      throw error;
+    } finally {
+      deadline.stop();
+    }
   }
 
   /**
@@ -557,15 +737,17 @@ export class OsvApiService {
         version: string;
         purl?: string;
         error: string | null;
-      } & QueryFindings<BatchVulnBrief>
+        lookupFailure?: McpError;
+      } & QueryFindings<BatchVulnBrief> &
+        Partial<UbuntuSourceResolution>
     >
   > {
     const deadline = operationDeadline ?? startQueryDeadline(ctx);
     const batchCtx = deadline.ctx;
     const { signal } = batchCtx;
-    const rows = packages.map((input) => {
+    const inputs = packages.map((input) => {
       let pkg: ResolvedPackage;
-      let error: string | null = null;
+      let error: McpError | string | null = null;
       try {
         pkg = resolvePackage(input);
       } catch (cause) {
@@ -579,16 +761,23 @@ export class OsvApiService {
       }
       return {
         pkg,
-        pages: [] as Array<{ ids: string[]; nextToken: string | undefined }>,
         error,
       };
     });
     const rawRecords = new Map<string, RawOsvVulnerability>();
-    const detailErrors = new Map<string, string>();
     const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+    const lookupError = (error: unknown) => (error instanceof McpError ? error : message(error));
+    const detailErrors = new Map<string, McpError | string>();
     const checkCancelled = () => ctx.signal.throwIfAborted();
-    const latestToken = (row: (typeof rows)[number]) => row.pages.at(-1)?.nextToken;
-    const bodyFor = (row: (typeof rows)[number]) => {
+    const latestToken = (target: BatchTarget) => target.pages.at(-1)?.nextToken;
+    const failedRow = (pkg: ResolvedPackage, error: McpError | string, truncated: boolean) => ({
+      ...pkg,
+      vulns: [],
+      error: typeof error === 'string' ? error : error.message,
+      ...(typeof error === 'string' ? {} : { lookupFailure: error }),
+      truncated,
+    });
+    const bodyFor = (row: BatchTarget) => {
       const token = latestToken(row);
       return { ...packageBody(row.pkg), ...(token ? { page_token: token } : {}) };
     };
@@ -605,11 +794,12 @@ export class OsvApiService {
         }),
       );
     };
-    const fallback = async (unresolved: typeof rows) => {
+    const fallback = async (unresolved: BatchTarget[]) => {
       await pool(unresolved, async (row) => {
         try {
-          while (row.pages.length < this.maxQueryPages) {
+          while (row.pageBudget.remaining > 0) {
             signal.throwIfAborted();
+            row.pageBudget.remaining--;
             const { status, data } = await postJson<RawOsvQueryResponse>(
               '/v1/query',
               bodyFor(row),
@@ -644,7 +834,7 @@ export class OsvApiService {
           }
         } catch (error) {
           checkCancelled();
-          if (!deadline.expired()) row.error = message(error);
+          if (!deadline.expired()) row.error = lookupError(error);
         }
       });
     };
@@ -664,21 +854,28 @@ export class OsvApiService {
             rawRecords.set(id, record);
           } catch (error) {
             checkCancelled();
-            if (!deadline.expired()) detailErrors.set(id, message(error));
+            if (!deadline.expired()) detailErrors.set(id, lookupError(error));
           }
         },
       );
     };
-    try {
-      let pending = rows.filter((row) => !row.error);
+    const queryTargets = async (targets: BatchTarget[]) => {
+      let pending = targets.filter((target) => target.pageBudget.remaining > 0);
       let recoveredIndex = false;
       while (pending.length) {
         checkCancelled();
+        const reserved = new Map<BatchTarget['pageBudget'], number>();
+        const round = pending.filter(({ pageBudget }) => {
+          const count = reserved.get(pageBudget) ?? 0;
+          if (count === pageBudget.remaining) return false;
+          reserved.set(pageBudget, count + 1);
+          return true;
+        });
         try {
           signal.throwIfAborted();
           const { status, data } = await postJson<unknown>(
             '/v1/querybatch',
-            { queries: pending.map(bodyFor) },
+            { queries: round.map(bodyFor) },
             this.timeoutMs,
             batchCtx,
           );
@@ -686,11 +883,11 @@ export class OsvApiService {
             const error = data as OsvApiError;
             const indexMatch = /^error in query at index (\d+):/.exec(error.message ?? '');
             const index = indexMatch ? Number(indexMatch[1]) : -1;
-            const row = pending[index];
+            const row = round[index];
             if (indexMatch && row && !recoveredIndex) {
               const detail = error.message.slice(indexMatch[0].length).trimStart();
               row.error = batchQueryRejection(row.pkg.ecosystem, detail, error.message);
-              pending = pending.filter((_, i) => i !== index);
+              pending = pending.filter((target) => target !== row);
               recoveredIndex = true;
               continue;
             }
@@ -698,66 +895,112 @@ export class OsvApiService {
             break;
           }
           const parsed = BatchResponseSchema.safeParse(data);
-          if (status !== 200 || !parsed.success || parsed.data.results.length !== pending.length) {
+          if (status !== 200 || !parsed.success || parsed.data.results.length !== round.length) {
             throw serviceUnavailable('OSV API returned a malformed or misaligned batch response.', {
               status,
             });
           }
           const pageIds = parsed.data.results.flatMap((result, i) => {
             // biome-ignore lint/style/noNonNullAssertion: validated positional cardinality
-            const row = pending[i]!;
+            const row = round[i]!;
             const ids = (result.vulns ?? []).map(({ id }) => id);
             row.pages.push({ ids, nextToken: result.next_page_token || undefined });
+            row.pageBudget.remaining--;
             return ids;
           });
           if (pageIds.length > 0) await hydrate(pageIds);
           pending = pending.filter(
-            (row) => latestToken(row) && row.pages.length < this.maxQueryPages,
+            (row) => row.pageBudget.remaining > 0 && (row.pages.length === 0 || latestToken(row)),
           );
         } catch (error) {
           checkCancelled();
-          if (!deadline.expired()) for (const row of pending) row.error = message(error);
+          if (!deadline.expired()) for (const row of pending) row.error = lookupError(error);
           break;
         }
       }
+    };
+    try {
+      const resolutions = await this.resolveUbuntu(
+        inputs.filter(({ error }) => !error).map(({ pkg }) => pkg),
+        batchCtx,
+      ).catch((error: unknown) => {
+        checkCancelled();
+        if (!deadline.expired()) throw error;
+        return new Map<ResolvedPackage, UbuntuSourceResolution | McpError>();
+      });
+      const rows = inputs.map(({ pkg, error }) => {
+        const resolution = resolutions.get(pkg);
+        const failure = error ?? (resolution instanceof McpError ? resolution : null);
+        const mapping = resolution instanceof McpError ? undefined : resolution;
+        const pageBudget = { remaining: this.maxQueryPages };
+        const targets: BatchTarget[] = failure
+          ? []
+          : (mapping?.sourceNames ?? [pkg.name]).map((name) => ({
+              pkg:
+                mapping === undefined
+                  ? pkg
+                  : { name, ecosystem: pkg.ecosystem, version: pkg.version },
+              pageBudget,
+              pages: [],
+              error: null,
+            }));
+        return { pkg, targets, mapping, failure };
+      });
+      const targets = rows.flatMap((row) => row.targets);
+      for (let offset = 0; offset < targets.length; offset += MAX_OSV_BATCH_QUERIES) {
+        await queryTargets(targets.slice(offset, offset + MAX_OSV_BATCH_QUERIES));
+      }
       checkCancelled();
-      return rows.map((row) => {
+      return rows.map(({ pkg, targets: rowTargets, mapping, failure }) => {
+        const truncated = rowTargets.some((target) => Boolean(latestToken(target)));
         try {
+          if (failure) return failedRow(pkg, failure, false);
           const ids = new Set<string>();
-          let error = row.error;
-          let checkpoint: { nextToken: string | undefined } | undefined;
-          for (const page of row.pages) {
-            const missing = page.ids.find((id) => !rawRecords.has(id));
-            if (missing !== undefined) {
-              error ??= detailErrors.get(missing) ?? (!checkpoint ? deadline.reason.message : null);
-              break;
+          let error: McpError | string | null = null;
+          let hasCheckpoint = false;
+          const sources: SourceCheckpoint[] = [];
+          for (const target of rowTargets) {
+            error ??= target.error;
+            let checkpoint: (typeof target.pages)[number] | undefined;
+            for (const page of target.pages) {
+              const missing = page.ids.find((id) => !rawRecords.has(id));
+              if (missing !== undefined) {
+                error ??= detailErrors.get(missing) ?? null;
+                break;
+              }
+              for (const id of page.ids) ids.add(id);
+              checkpoint = page;
             }
-            for (const id of page.ids) ids.add(id);
-            checkpoint = page;
+            hasCheckpoint ||= checkpoint !== undefined;
+            sources.push({
+              name: target.pkg.name,
+              token: checkpoint === undefined ? undefined : (checkpoint.nextToken ?? null),
+            });
           }
-          if (!checkpoint && deadline.expired()) error ??= deadline.reason.message;
-          if (error) return { ...row.pkg, vulns: [], error, truncated: Boolean(latestToken(row)) };
+          if (!hasCheckpoint && deadline.expired()) error ??= timeout(deadline.reason.message);
+          if (error) return { ...failedRow(pkg, error, truncated), ...mapping };
           const vulns = [...ids].map((id) => {
             // biome-ignore lint/style/noNonNullAssertion: all IDs have records or a detail error above
-            return toBrief(normalizePackageVuln(rawRecords.get(id)!, row.pkg));
+            return toBrief(normalizePackageVuln(rawRecords.get(id)!, pkg, mapping?.sourceNames));
           });
-          const token = checkpoint?.nextToken;
+          const token = sources[0]?.token;
+          const nextCursor = mapping
+            ? sources.some((source) => source.token !== null)
+              ? encodeSourceCursor(packageBody(pkg), sources, mapping.sourceResolutionUnavailable)
+              : undefined
+            : token
+              ? encodeQueryCursor(packageBody(pkg), token)
+              : undefined;
           return {
-            ...row.pkg,
+            ...pkg,
+            ...mapping,
             vulns,
             error: null,
-            truncated: token !== undefined,
-            ...(token === undefined
-              ? {}
-              : { nextCursor: encodeQueryCursor(packageBody(row.pkg), token) }),
+            truncated: nextCursor !== undefined,
+            ...(nextCursor === undefined ? {} : { nextCursor }),
           };
         } catch (error) {
-          return {
-            ...row.pkg,
-            vulns: [],
-            error: message(error),
-            truncated: Boolean(latestToken(row)),
-          };
+          return { ...failedRow(pkg, message(error), truncated), ...mapping };
         }
       });
     } finally {

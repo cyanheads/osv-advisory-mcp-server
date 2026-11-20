@@ -100,6 +100,8 @@ Each step is independently testable. Steps 3 and 4 can be developed in parallel 
 
 ### Package identity and commit scope
 
+OSV indexes Ubuntu advisories under source names, while installed-package inventories commonly report binary names. Both package tools resolve names through `POST /v1experimental/ubuntu/binary-to-source` for release-qualified Ubuntu inputs. The advisory lookup uses the original version and ecosystem, including Pro or LTS scope. A successful empty mapping falls back to the supplied name. Mapping service unavailability leaves coverage incomplete.
+
 Package queries accept a name/ecosystem/version tuple or a PURL with exactly one embedded or separate version. `packageurl-js` parses the standard syntax. The OSV adapter derives the coordinate for affected-package matching and echoes the original PURL. Native PURL dispatch preserves qualifiers and subpaths. An embedded npm/crates.io exact pin or a prefixed Debian release can require wire normalization. Alpine and numeric Ubuntu releases dispatch as release tuples because native PURL lookup loses the release. Batch rows may mix both forms, and malformed or unsupported identifiers fail their own rows without losing the submitted identity.
 
 The shared ecosystem catalog folds known base names to canonical case before version validation, leaving suffix bytes and unknown bases unchanged. Alpine requires a nonempty tuple release suffix. PURL qualifiers `3.17`, `v3.17`, and `alpine-3.17.3` select `Alpine:v3.17`. A Debian PURL with an explicit distro requires a known release number or codename, with an optional `debian-` prefix. A numeric Ubuntu qualifier such as `ubuntu-22.04.1` selects `Ubuntu:22.04`. Maven requires `groupId:artifactId`, accepts one unambiguous slash as the separator, and retains repository suffixes. Composer PURLs retain native dispatch while deriving `Packagist` vendor/package matching and optional `repository_url` scope. Indexed and fallback batch ecosystem errors use the single-query recovery guidance without expanding the bounded retry policy.
@@ -110,7 +112,7 @@ Commit queries use a dedicated tool because a commit has no package identity. Th
 
 Package, commit and batch queries use a 50-second deadline across requests, retries, body reads and hydration. If the deadline expires after a usable page, the reply returns findings through that checkpoint and a `nextCursor`. Before a usable checkpoint, deadline expiry fails the query or affected batch row. Caller cancellation propagates.
 
-Batch field retrieval shares that deadline across the rows fetched for a single call and keeps it distinct from caller cancellation. A `/results` page retains entries that fit, including the active row's recoverable cursor or row error, and reports the first unread row as `page.nextOffset`. A nested row lookup preserves its checkpoint; a genuine caller abort still fails the call.
+Batch field retrieval shares that deadline across the rows fetched for a single call and keeps it distinct from caller cancellation. A `/results` page retains entries that fit, including the active row's recoverable cursor or row error, and reports the first unread row as `page.nextOffset`. A nested advisory page returns the lookup failure when that failure prevented hydration. The row and its `error` field remain readable. A nested lookup that reached a checkpoint preserves its cursor.
 
 ### Bounded stateless retrieval
 
@@ -192,6 +194,8 @@ Commit advisories use literal Markdown for ordinary scalar fields and reversible
 - **Out of scope** — emphasis bleeding into server lines and backticks breaking out of identifier code spans; neither hides text, forges the frame, or makes a link once `<` and link destinations are escaped. A fence opened indented 1–3 spaces and never closed still runs to the end of the response in a rendered view.
 
 ### Advisory relationships and affected metadata
+
+An affected range may carry its own `database_specific` object. Detail retrieval preserves that object, including nested release and tag evidence, separately from the range events used to calculate fixes. A caller can retrieve it at `/affected/<index>/ranges/<index>/database_specific`.
 
 Every advisory surface preserves `aliases` and optional ordered `upstream` IDs independently. CVE-shaped values from either list chain to `nvd_get_cve` on `nist-nvd-mcp-server` for CVSS scoring and CISA KEV status. An alias names the same reported vulnerability; a distribution advisory can cover several upstream vulnerabilities. Neither relationship changes advisory counts or package-scoped severity and fixes.
 

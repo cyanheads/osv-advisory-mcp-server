@@ -69,7 +69,9 @@ const PackageInputSchema = z.union([
           message: 'Provide purl or name/ecosystem, never both.',
         });
     })
-    .describe('Exact package tuple.'),
+    .describe(
+      'Exact package tuple. A release-qualified Ubuntu ecosystem resolves binary names to source packages.',
+    ),
   PackagePurlInput.describe('PURL alternative with exactly one version source.'),
 ]);
 
@@ -113,6 +115,16 @@ const PerPackageResultSchema = z.object({
     .string()
     .optional()
     .describe('Original PURL when supplied, including when the identifier cannot be resolved.'),
+  sourceNames: z
+    .array(z.string().describe('A name queried against the Ubuntu advisory index.'))
+    .optional()
+    .describe('Distinct source or fallback names queried for a release-qualified Ubuntu package.'),
+  sourceResolutionUnavailable: z
+    .literal(true)
+    .optional()
+    .describe(
+      'Ubuntu source resolution was unavailable. A result without findings is inconclusive.',
+    ),
   vulnerable: z.boolean().describe('True if any vulnerabilities were found.'),
   nextCursor: RowNextCursor,
   truncated: z
@@ -154,7 +166,9 @@ const BatchFullOutput = z.object({
       vulnerableCount: z.number().describe('Packages with at least one vulnerability.'),
       cleanCount: z
         .number()
-        .describe('Packages confirmed clean — no vulnerabilities, no error, and not truncated.'),
+        .describe(
+          'Packages checked completely with no vulnerabilities, including Ubuntu source resolution when applicable.',
+        ),
       truncatedCount: z
         .number()
         .describe(
@@ -171,6 +185,12 @@ const BatchFullOutput = z.object({
         .array(z.number().int().describe('Zero-based original input index.'))
         .describe(
           'Ascending indices of upstream-truncated rows, including vulnerable and errored rows.',
+        ),
+      sourceResolutionUnavailableRowRanges: z
+        .string()
+        .optional()
+        .describe(
+          'Zero-based original rows with unavailable Ubuntu source resolution, as comma-separated indices and inclusive ranges (e.g. 0,3-5). Retrieve details at /results/<index>.',
         ),
       totalVulns: z
         .number()
@@ -190,6 +210,12 @@ const BatchOutput = BatchFullOutput.partial().extend({
   ...RetrievalOutput.shape,
   nextCursor: RowNextCursor,
 });
+
+function isConfirmedClean(row: z.infer<typeof PerPackageResultSchema>): boolean {
+  return (
+    !row.vulnerable && row.error === null && !row.truncated && !row.sourceResolutionUnavailable
+  );
+}
 
 function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text'; text: string }> {
   const retrieval = renderRetrieval(result, (path) =>
@@ -230,6 +256,10 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
   if (summary.inputRemainder !== undefined) lines.push('', summary.inputRemainder, '');
   for (const key of ['vulnerableRows', 'errorRows', 'truncatedRows'] as const)
     lines.push(`${key}: ${JSON.stringify(summary[key])}`);
+  if (summary.sourceResolutionUnavailableRowRanges !== undefined)
+    lines.push(
+      `sourceResolutionUnavailableRowRanges: ${summary.sourceResolutionUnavailableRowRanges}`,
+    );
 
   const vulnerable = result.results.filter((r) => r.vulnerable);
   if (vulnerable.length > 0) {
@@ -275,7 +305,7 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
     }
   }
 
-  const clean = result.results.filter((r) => !r.vulnerable && r.error === null && !r.truncated);
+  const clean = result.results.filter(isConfirmedClean);
   if (clean.length > 0) {
     lines.push(`\n## Clean Packages\n`);
     for (const pkg of clean) {
@@ -297,6 +327,12 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
     }
   }
   result.results.forEach((row, index) => {
+    if (row.sourceNames !== undefined)
+      lines.push(`Row ${index} queried Ubuntu names: ${row.sourceNames.map(esc).join(', ')}`);
+    if (row.sourceResolutionUnavailable)
+      lines.push(
+        `Row ${index}: Ubuntu source resolution unavailable. An empty result is inconclusive.`,
+      );
     if (row.nextCursor !== undefined)
       lines.push(`Row ${index} → osv_query_package: ${cursorBlock(row.nextCursor).text}`);
   });
@@ -324,7 +360,7 @@ export function createOsvQueryBatch(serveOverCap: boolean) {
         .min(1)
         .max(maxSubmitted)
         .describe(
-          'Packages to audit. One entry per dependency. Positional: result[i] corresponds to packages[i].',
+          'Packages to audit. Release-qualified Ubuntu tuples and PURLs resolve binary names to source packages. One entry per dependency. Positional: result[i] corresponds to packages[i].',
         ),
     }),
 
@@ -383,6 +419,10 @@ export function createOsvQueryBatch(serveOverCap: boolean) {
         ecosystem: r.ecosystem,
         version: r.version,
         ...(r.purl === undefined ? {} : { purl: r.purl }),
+        ...(r.sourceNames === undefined ? {} : { sourceNames: r.sourceNames }),
+        ...(r.sourceResolutionUnavailable === undefined
+          ? {}
+          : { sourceResolutionUnavailable: r.sourceResolutionUnavailable }),
         vulnerable: r.vulns.length > 0,
         truncated: r.truncated,
         ...(r.nextCursor === undefined ? {} : { nextCursor: r.nextCursor }),
@@ -398,7 +438,7 @@ export function createOsvQueryBatch(serveOverCap: boolean) {
           });
         const [row] = await service.queryBatch([pkg], ctx, deadline);
         if (!row) throw serviceUnavailable('OSV batch service omitted its requested row.');
-        return project(row);
+        return row;
       };
       if (input.page?.path === '/results') {
         const deadline = startQueryDeadline(ctx);
@@ -407,7 +447,7 @@ export function createOsvQueryBatch(serveOverCap: boolean) {
             packages.length,
             input.page,
             nodeRevision(input.packages),
-            (index) => fetchRow(index, deadline),
+            async (index) => project(await fetchRow(index, deadline)),
             measureBatch,
             deadline.expired,
           );
@@ -427,8 +467,12 @@ export function createOsvQueryBatch(serveOverCap: boolean) {
             reason: 'invalid_page_path',
             recovery: { hint: inputRemainder },
           });
-        const row = await fetchRow(index);
-        const node = resolvePointer(row, match[2] ?? '');
+        const result = await fetchRow(index);
+        const path = match[2] ?? '';
+        if (result.lookupFailure && /^\/vulns\/(0|[1-9]\d*)(\/|$)/.test(path))
+          throw result.lookupFailure;
+        const row = project(result);
+        const node = resolvePointer(row, path);
         const retained = row.nextCursor === undefined ? {} : { nextCursor: row.nextCursor };
         return pageValue(node, input.page, measureBatch, retained);
       }
@@ -446,17 +490,20 @@ export function createOsvQueryBatch(serveOverCap: boolean) {
       // Build typed result rows
       const results = rawResults.map(project);
 
-      // Aggregate stats. A truncated row is never counted as clean — its result may
-      // be incomplete, so "clean" requires no vulns, no error, AND not truncated.
       const vulnerableRows = results.flatMap((row, index) => (row.vulnerable ? [index] : []));
       const errorRows = results.flatMap((row, index) => (row.error !== null ? [index] : []));
       const truncatedRows = results.flatMap((row, index) => (row.truncated ? [index] : []));
+      const unresolvedRanges: string[] = [];
+      for (let index = 0; index < results.length; index++) {
+        if (!results[index]?.sourceResolutionUnavailable) continue;
+        const start = index;
+        while (results[index + 1]?.sourceResolutionUnavailable) index++;
+        unresolvedRanges.push(start === index ? String(start) : `${start}-${index}`);
+      }
       const vulnerableCount = vulnerableRows.length;
       const errorCount = errorRows.length;
       const truncatedCount = truncatedRows.length;
-      const cleanCount = results.filter(
-        (r) => !r.vulnerable && r.error === null && !r.truncated,
-      ).length;
+      const cleanCount = results.filter(isConfirmedClean).length;
       const totalVulns = results.reduce((sum, r) => sum + r.vulnCount, 0);
       const allSeverities = results.flatMap((r) => r.vulns.map((v) => v.severityLabel));
       const worst = worstSeverity(allSeverities);
@@ -474,6 +521,9 @@ export function createOsvQueryBatch(serveOverCap: boolean) {
         vulnerableRows,
         errorRows,
         truncatedRows,
+        ...(unresolvedRanges.length === 0
+          ? {}
+          : { sourceResolutionUnavailableRowRanges: unresolvedRanges.join(',') }),
         totalVulns,
         worstSeverity: worst,
       };
@@ -485,9 +535,7 @@ export function createOsvQueryBatch(serveOverCap: boolean) {
         totalVulns,
       });
 
-      // "All clean" must exclude truncated rows — a truncated batch is not confirmed clean.
-      const allClean =
-        unprocessedCount === 0 && vulnerableCount === 0 && errorCount === 0 && truncatedCount === 0;
+      const allClean = unprocessedCount === 0 && cleanCount === results.length;
       const allErrors = errorCount === results.length;
       const enrichment: { notice?: string; effectiveQuery?: string } = {};
       if ((allClean || allErrors) && !input.page) {

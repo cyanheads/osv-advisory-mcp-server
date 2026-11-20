@@ -28,6 +28,7 @@ export interface RawOsvEvent {
 
 /** Raw version range in an affected entry. */
 export interface RawOsvRange {
+  database_specific?: Record<string, unknown>;
   events?: RawOsvEvent[];
   /** Source repository URL — populated on GIT ranges, absent on version ranges. */
   repo?: string;
@@ -178,6 +179,8 @@ export interface OsvVulnerability {
     /** Explicitly enumerated affected versions, when the advisory lists them. */
     versions?: string[];
     ranges: Array<{
+      /** Source database context for this range, separate from its ordered events. */
+      database_specific?: Record<string, unknown>;
       rangeType: string;
       introduced?: string;
       fixed?: string;

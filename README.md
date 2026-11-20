@@ -47,10 +47,11 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 
 - Provide `name`, `ecosystem`, and `version`, or a `purl` such as `pkg:pypi/jinja2@3.1.4`. Known ecosystem bases normalize case (`pypi` → `PyPI`); release and repository suffixes retain their spelling. A PURL needs exactly one version: embedded in the URL or supplied separately. Versions are exact, never ranges
 - Alpine needs a release branch, such as `Alpine:v3.17` or `distro=alpine-3.17.3` in a PURL. Debian PURLs accept known releases or codenames, with an optional `debian-` prefix. Numeric Ubuntu PURL qualifiers such as `distro=ubuntu-22.04.1` select the release `Ubuntu:22.04`
+- For a release-qualified Ubuntu query, supply the installed binary name and version. Both package tools look up the source packages OSV indexes for that release. For example, `libssl3` on `Ubuntu:22.04:LTS` resolves to `openssl`. A fallback lookup covers only the supplied name and marks coverage incomplete. A mapping rate limit or exhausted deadline requires a retry
 - Maven needs `groupId:artifactId` (a single `groupId/artifactId` slash normalizes). Composer PURLs map to Packagist; an optional `repository_url` keeps repository scope
 - Unsupported ecosystem-specific constraints fail as `invalid_version`; npm/crates.io exact pins with `=` or `==` normalize to the installed version
 - Each advisory carries CVE `aliases`, optional `upstream` IDs, `severityLabel` with its `severitySource`, the queried package's `fixedVersions`, `affectedRanges`, and `cweIds`
-- `truncated: true` indicates more OSV pages remain. Pass `nextCursor` as `cursor` with the same identifier to continue. Repeat that input cursor alongside `page` when retrieving fields from a resumed reply. An empty initial complete result confirms no known vulnerabilities. An empty terminal resume only confirms exhaustion of the continuation
+- `truncated: true` indicates more OSV pages remain. Pass `nextCursor` as `cursor` with the same identifier to continue. Repeat that input cursor alongside `page` when retrieving fields from a resumed reply. An empty initial result confirms no known vulnerabilities when lookup and source resolution completed. An empty terminal resume only confirms exhaustion of the continuation
 
 ---
 
@@ -61,7 +62,9 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 - Each row carries `vulnerable`, `vulnCount`, `vulns`, `truncated`, and `error`; a failure lands in the affected rows' `error` instead of failing the call
 - `summary` totals the scan (`vulnerableCount`, `cleanCount`, `truncatedCount`, `errorCount`, `totalVulns`, `worstSeverity`), and truncated rows never count as clean. The whole scan has a 50-second deadline
 - `vulnerableRows`, `errorRows`, and `truncatedRows` in `summary` retain original zero-based indices even when the preview omits those rows. Lists can overlap; retrieve a row with `/results/<index>`
+- `summary.sourceResolutionUnavailableRowRanges` identifies rows checked under their supplied Ubuntu names after a mapping failure. For example, `0,3-5` means rows 0, 3, 4, and 5. Those rows are excluded from `cleanCount`
 - Resume a row through `osv_query_package` with its original identifier and `nextCursor` as `cursor`
+- If a nested advisory page returns a timeout or upstream error, retry the same path. You can also retrieve `/results/<index>/error` for the row diagnostic
 
 ---
 
@@ -77,6 +80,7 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 
 - One exact advisory ID from any OSV source (`GHSA-`, `PYSEC-`, `RUSTSEC-`, `GO-`, `DSA-`, `USN-`, `CVE-`, …), matched case-sensitively
 - Full record: `details`, `aliases`, optional `upstream` and `related` IDs, every affected package with its ranges and source metadata, `severityLabel`, `cweIds`, and `references`
+- When OSV publishes evidence for a converted range, inspect `/affected/<index>/ranges/<index>/database_specific`. Its source tags and release boundaries accompany OSV's normalized events
 - An unknown ID fails as `vulnerability_not_found`; `withdrawn` is set only on retracted advisories
 
 ---

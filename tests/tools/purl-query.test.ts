@@ -156,6 +156,13 @@ describe('PURL package queries', () => {
       };
       const fetchMock = vi.fn((url: string | URL, init?: RequestInit) => {
         const path = new URL(String(url)).pathname;
+        if (path === '/v1experimental/ubuntu/binary-to-source') {
+          expect(JSON.parse(String(init?.body))).toEqual({
+            ecosystem: 'Ubuntu:22.04',
+            binary_names: ['openssl'],
+          });
+          return Promise.resolve(Response.json({ results: [{}] }));
+        }
         if (path === '/v1/querybatch') {
           expect(JSON.parse(String(init?.body))).toEqual({ queries: [query] });
           return Promise.resolve(Response.json({ results: [{ next_page_token: 'next' }] }));
@@ -207,7 +214,7 @@ describe('PURL package queries', () => {
       expect(stale.structuredContent).toMatchObject({
         error: { data: { reason: 'invalid_cursor' } },
       });
-      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(fetchMock).toHaveBeenCalledTimes(ecosystem === 'Ubuntu:22.04' ? 8 : 4);
 
       const clean = captureOsvQueries([]);
       const cleanReply = await runToolContract(osvQueryPackage, input);

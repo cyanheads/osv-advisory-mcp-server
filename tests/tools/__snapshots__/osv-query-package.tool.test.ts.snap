@@ -220,6 +220,9 @@ exports[`osvQueryPackage over a real service and stubbed OSV HTTP > render-bound
   "queryMeta": {
     "ecosystem": "Ubuntu:22.04:LTS",
     "package": "xz-utils",
+    "sourceNames": [
+      "xz-utils",
+    ],
     "version": "1.0.0",
     "vulnCount": 1,
   },
