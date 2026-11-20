@@ -25,6 +25,17 @@ describe('OSV wire package coordinates', () => {
   );
 
   it.each([
+    ['pkg:deb/debian/a@1', 'Debian'],
+    ['pkg:deb/ubuntu/a@1', 'Ubuntu'],
+    ['pkg:deb/ubuntu/a@1?distro=jammy', 'Ubuntu'],
+    ['pkg:deb/debian/a@1?arch=source&distro=12', 'Debian:12'],
+  ])('keeps the existing native PURL and matching coordinate for %s', (purl, ecosystem) => {
+    const resolved = resolvePackage({ purl });
+    expect(resolved.ecosystem).toBe(ecosystem);
+    expect(packageBody(resolved)).toEqual({ package: { purl } });
+  });
+
+  it.each([
     ['pypi', 'PyPI'],
     ['go', 'Go'],
     ['rubygems', 'RubyGems'],
@@ -52,10 +63,33 @@ describe('OSV wire package coordinates', () => {
     });
   });
 
+  it.each(['ubuntu-22.04', '22.04', 'ubuntu-22.04.1'])(
+    'scopes the Ubuntu distro %s to its release tuple',
+    (distro) => {
+      const purl = `pkg:deb/ubuntu/openssl@3.0.2-0ubuntu1?distro=${distro}`;
+      const resolved = resolvePackage({ purl });
+      expect(resolved.purl).toBe(purl);
+      expect(packageBody(resolved)).toEqual({
+        package: { name: 'openssl', ecosystem: 'Ubuntu:22.04' },
+        version: '3.0.2-0ubuntu1',
+      });
+    },
+  );
+
+  it.each(['debian-12', 'debian-bookworm'])('normalizes Debian distro %s on the wire', (distro) => {
+    const purl = `pkg:deb/debian/openssl@3.0.8-1?arch=source&distro=${distro}`;
+    const resolved = resolvePackage({ purl });
+    expect(resolved).toMatchObject({ purl, ecosystem: 'Debian:12' });
+    expect(packageBody(resolved)).toEqual({
+      package: { purl: 'pkg:deb/debian/openssl@3.0.8-1?arch=source&distro=12' },
+    });
+  });
+
   it.each([
     [{ name: 'openssl', ecosystem: 'alpine', version: '3.0.8-r0' }, 'alpine_release_required'],
     [{ purl: 'pkg:apk/alpine/openssl@3.0.8-r0' }, 'alpine_release_required'],
     [{ purl: 'pkg:apk/alpine/openssl@3.0.8-r0?distro=edge' }, 'alpine_release_required'],
+    [{ purl: 'pkg:deb/debian/openssl@3.0.8-1?distro=99999' }, 'invalid_debian_distro'],
     [{ name: 'a', ecosystem: 'Maven', version: '1' }, 'invalid_maven_name'],
     [{ name: 'g/a:b', ecosystem: 'Maven', version: '1' }, 'invalid_maven_name'],
     [{ name: 'g:', ecosystem: 'Maven', version: '1' }, 'invalid_maven_name'],

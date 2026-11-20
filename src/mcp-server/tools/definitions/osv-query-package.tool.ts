@@ -452,6 +452,14 @@ export const osvQueryPackage = tool('osv_query_package', {
       thrownBy: 'service',
     },
     {
+      reason: 'invalid_debian_distro',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'A Debian PURL has an explicit distro qualifier that cannot be resolved to a release.',
+      recovery:
+        'Use a Debian major release or codename, or a tuple with an ecosystem such as Debian:12.',
+      thrownBy: 'service',
+    },
+    {
       reason: 'invalid_maven_name',
       code: JsonRpcErrorCode.ValidationError,
       when: 'A Maven or Gradle package coordinate is missing its group or artifact, or is ambiguous.',

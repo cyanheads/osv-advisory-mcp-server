@@ -22,6 +22,11 @@ describe('PURL package queries', () => {
       'invalid_maven_name',
       'groupId:artifactId',
     ],
+    [
+      { purl: 'pkg:deb/debian/openssl@3.0.8-1?distro=debian-unknown' },
+      'invalid_debian_distro',
+      'Debian:12',
+    ],
   ] as const)('surfaces actionable coordinate errors for %j', async (input, reason, hint) => {
     const bodies = captureOsvQueries([]);
     initOsvApiService();
@@ -96,71 +101,125 @@ describe('PURL package queries', () => {
     expect(single).toHaveBeenCalledTimes(2);
   });
 
-  it('uses the Alpine release coordinate across batch continuation and advisory field retrieval', async () => {
-    const purl = 'pkg:apk/alpine/openssl?distro=v3.17.3';
-    const input = { purl, version: '3.0.8-r0' };
-    const query = {
-      package: { name: 'openssl', ecosystem: 'Alpine:v3.17' },
-      version: input.version,
-    };
-    const record = {
-      id: 'ALPINE-CVE-2023-0464',
-      affected: ['Alpine:v3.18', 'Alpine:v3.17'].map((ecosystem, index) => ({
-        package: { name: 'openssl', ecosystem },
-        ranges: [
-          {
-            type: 'ECOSYSTEM',
-            events: [{ introduced: '0' }, { fixed: index ? '3.0.8-r1' : '3.1.0-r1' }],
-          },
-        ],
-      })),
-    };
-    const fetchMock = vi.fn((url: string | URL, init?: RequestInit) => {
-      const path = new URL(String(url)).pathname;
-      if (path === '/v1/querybatch') {
-        expect(JSON.parse(String(init?.body))).toEqual({ queries: [query] });
-        return Promise.resolve(Response.json({ results: [{ next_page_token: 'next' }] }));
-      }
-      if (path === '/v1/query') {
-        expect(JSON.parse(String(init?.body))).toEqual({ ...query, page_token: 'next' });
-        return Promise.resolve(Response.json({ vulns: [record] }));
-      }
-      expect(path).toBe(`/v1/vulns/${record.id}`);
-      return Promise.resolve(Response.json(record));
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    initOsvApiService({ maxQueryPages: 1 });
-    const invalid = { purl: 'pkg:apk/alpine/openssl@3.0.8-r0' };
-    const batch = await runToolContract(osvQueryBatch, { packages: [invalid, input] });
-    const batchValue = osvQueryBatch.output.parse(batch.structuredContent);
-    expect(batchValue.summary).toMatchObject({ errorRows: [0], truncatedRows: [1] });
-    expect(batchValue.results).toMatchObject([
-      { purl: invalid.purl, error: expect.stringContaining('Alpine:v<major>.<minor>') },
-      { purl, ecosystem: 'Alpine:v3.17', truncated: true },
-    ]);
-    expect(JSON.stringify(batch.content)).toContain('Alpine:v3.17');
-    const cursor = batchValue.results![1]!.nextCursor!;
-    const resumed = await runToolContract(osvQueryPackage, { ...input, cursor });
-    expect(resumed.structuredContent).toMatchObject({
-      queryMeta: { purl, ecosystem: 'Alpine:v3.17' },
-      vulns: [{ fixedVersions: ['3.0.8-r1'] }],
-    });
-    expect(JSON.stringify(resumed.content)).toContain('Fixed in 3.0.8-r1');
-    const field = await runToolContract(osvQueryPackage, {
-      ...input,
-      cursor,
-      page: { advisoryId: record.id, path: '/fixedVersions' },
-    });
-    expect(field.structuredContent).toMatchObject({ page: { entries: [{ value: '3.0.8-r1' }] } });
-    expect(JSON.stringify(field.content)).toContain('3.0.8-r1');
-    const stale = await runToolContract(osvQueryPackage, {
-      ...input,
-      purl: 'pkg:apk/alpine/openssl?distro=v3.18',
-      cursor,
-    });
-    expect(stale.isError).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-  });
+  it.each([
+    {
+      purl: 'pkg:apk/alpine/openssl?distro=alpine-3.17.3',
+      otherPurl: 'pkg:apk/alpine/openssl?distro=alpine-3.18.3',
+      version: '3.0.8-r0',
+      ecosystem: 'Alpine:v3.17',
+      other: 'Alpine:v3.18',
+      query: { package: { name: 'openssl', ecosystem: 'Alpine:v3.17' }, version: '3.0.8-r0' },
+      invalid: 'pkg:apk/alpine/openssl@3.0.8-r0',
+      guidance: 'Alpine:v<major>.<minor>',
+    },
+    {
+      purl: 'pkg:deb/debian/openssl?arch=source&distro=debian-bookworm',
+      otherPurl: 'pkg:deb/debian/openssl?arch=source&distro=debian-trixie',
+      version: '3.0.8-1',
+      ecosystem: 'Debian:12',
+      other: 'Debian:13',
+      query: {
+        package: { purl: 'pkg:deb/debian/openssl?arch=source&distro=12' },
+        version: '3.0.8-1',
+      },
+      invalid: 'pkg:deb/debian/openssl@3.0.8-1?distro=debian-unknown',
+      guidance: 'Debian:12',
+    },
+    {
+      purl: 'pkg:deb/ubuntu/openssl?distro=ubuntu-22.04.1',
+      otherPurl: 'pkg:deb/ubuntu/openssl?distro=ubuntu-18.04.1',
+      version: '3.0.2-0ubuntu1',
+      ecosystem: 'Ubuntu:22.04',
+      other: 'Ubuntu:18.04:LTS',
+      query: { package: { name: 'openssl', ecosystem: 'Ubuntu:22.04' }, version: '3.0.2-0ubuntu1' },
+      invalid: 'pkg:deb/ubuntu/openssl',
+      guidance: 'exactly one version',
+    },
+  ])(
+    'uses the $ecosystem coordinate across continuation and advisory field retrieval',
+    async ({ purl, otherPurl, version, ecosystem, other, query, invalid, guidance }) => {
+      const input = { purl, version };
+      const record = {
+        id: 'OSV-scoped-release',
+        affected: [other, ecosystem === 'Ubuntu:22.04' ? 'Ubuntu:22.04:LTS' : ecosystem].map(
+          (entry, index) => ({
+            package: { name: 'openssl', ecosystem: entry },
+            severity: [{ type: 'Ubuntu', score: index ? 'low' : 'critical' }],
+            ranges: [
+              {
+                type: 'ECOSYSTEM',
+                events: [{ introduced: '0' }, { fixed: index ? '3.0.8-r1' : '3.1.0-r1' }],
+              },
+            ],
+          }),
+        ),
+      };
+      const fetchMock = vi.fn((url: string | URL, init?: RequestInit) => {
+        const path = new URL(String(url)).pathname;
+        if (path === '/v1/querybatch') {
+          expect(JSON.parse(String(init?.body))).toEqual({ queries: [query] });
+          return Promise.resolve(Response.json({ results: [{ next_page_token: 'next' }] }));
+        }
+        if (path === '/v1/query') {
+          expect(JSON.parse(String(init?.body))).toEqual({ ...query, page_token: 'next' });
+          return Promise.resolve(Response.json({ vulns: [record] }));
+        }
+        expect(path).toBe(`/v1/vulns/${record.id}`);
+        return Promise.resolve(Response.json(record));
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      initOsvApiService({ maxQueryPages: 1 });
+      const batch = await runToolContract(osvQueryBatch, { packages: [{ purl: invalid }, input] });
+      const batchValue = osvQueryBatch.output.parse(batch.structuredContent);
+      expect(batchValue.summary).toMatchObject({ errorRows: [0], truncatedRows: [1] });
+      expect(batchValue.results).toMatchObject([
+        { purl: invalid, error: expect.stringContaining(guidance) },
+        { purl, ecosystem, truncated: true },
+      ]);
+      expect(JSON.stringify(batch.content)).toContain(ecosystem);
+      expect(JSON.stringify(batch.content)).toContain(guidance.replaceAll('<', '&lt;'));
+      const cursor = batchValue.results![1]!.nextCursor!;
+      const resumed = await runToolContract(osvQueryPackage, { ...input, cursor });
+      expect(resumed.structuredContent).toMatchObject({
+        queryMeta: { purl, ecosystem },
+        vulns: [{ fixedVersions: ['3.0.8-r1'], severityLabel: 'LOW' }],
+      });
+      expect(JSON.stringify(resumed.content)).toContain('Fixed in 3.0.8-r1');
+      const field = await runToolContract(osvQueryPackage, {
+        ...input,
+        cursor,
+        page: { advisoryId: record.id, path: '/fixedVersions' },
+      });
+      expect(field.structuredContent).toMatchObject({ page: { entries: [{ value: '3.0.8-r1' }] } });
+      expect(JSON.stringify(field.content)).toContain('3.0.8-r1');
+      const pastEnd = await runToolContract(osvQueryPackage, {
+        ...input,
+        cursor,
+        page: { advisoryId: record.id, path: '/fixedVersions', offset: 2 },
+      });
+      expect(pastEnd.structuredContent).toMatchObject({ page: { offset: 2, nextOffset: null } });
+      expect(JSON.stringify(pastEnd.content)).not.toContain('3.0.8-r1');
+      const stale = await runToolContract(osvQueryPackage, {
+        purl: otherPurl,
+        version,
+        cursor,
+      });
+      expect(stale.structuredContent).toMatchObject({
+        error: { data: { reason: 'invalid_cursor' } },
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+
+      const clean = captureOsvQueries([]);
+      const cleanReply = await runToolContract(osvQueryPackage, input);
+      expect(cleanReply.structuredContent).toMatchObject({
+        vulns: [],
+        queryMeta: { purl, ecosystem },
+        notice: expect.stringContaining('No known vulnerabilities'),
+      });
+      expect(JSON.stringify(cleanReply.content)).toContain('No known vulnerabilities');
+      expect(clean).toEqual([query]);
+    },
+  );
 
   it('scopes Composer fixes to the PURL repository while forwarding its wire identity', async () => {
     const purl = 'pkg:composer/guzzlehttp/guzzle?repository_url=https%3A%2F%2Fexample.org%2FRepo';

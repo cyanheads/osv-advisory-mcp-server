@@ -46,7 +46,8 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 ### `osv_query_package` <sub>tool</sub>
 
 - Provide `name`, `ecosystem`, and `version`, or a `purl` such as `pkg:pypi/jinja2@3.1.4`. Known ecosystem bases normalize case (`pypi` → `PyPI`); release and repository suffixes retain their spelling. A PURL needs exactly one version: embedded in the URL or supplied separately. Versions are exact, never ranges
-- Alpine needs a release branch, such as `Alpine:v3.17` or `pkg:apk/alpine/openssl@3.0.8-r0?distro=3.17.3`. Maven needs `groupId:artifactId` (a single `groupId/artifactId` slash normalizes). Composer PURLs map to Packagist; an optional `repository_url` keeps repository scope
+- Alpine needs a release branch, such as `Alpine:v3.17` or `distro=alpine-3.17.3` in a PURL. Debian PURLs accept known releases or codenames, with an optional `debian-` prefix. Numeric Ubuntu PURL qualifiers such as `distro=ubuntu-22.04.1` select the release `Ubuntu:22.04`
+- Maven needs `groupId:artifactId` (a single `groupId/artifactId` slash normalizes). Composer PURLs map to Packagist; an optional `repository_url` keeps repository scope
 - Unsupported ecosystem-specific constraints fail as `invalid_version`; npm/crates.io exact pins with `=` or `==` normalize to the installed version
 - Each advisory carries CVE `aliases`, optional `upstream` IDs, `severityLabel` with its `severitySource`, the queried package's `fixedVersions`, `affectedRanges`, and `cweIds`
 - `truncated: true` indicates more OSV pages remain. Pass `nextCursor` as `cursor` with the same identifier to continue. Repeat that input cursor alongside `page` when retrieving fields from a resumed reply. An empty initial complete result confirms no known vulnerabilities. An empty terminal resume only confirms exhaustion of the continuation

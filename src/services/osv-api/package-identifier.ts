@@ -64,28 +64,29 @@ const ECOSYSTEMS: Record<string, string> = {
   'apk/dhi': 'Docker Hardened Images',
   'deb/dhi': 'Docker Hardened Images',
 };
-const DEBIAN_VERSIONS: Record<string, string> = {
-  buzz: '1.1',
-  rex: '1.2',
-  bo: '1.3',
-  hamm: '2',
-  slink: '2.1',
-  potato: '2.2',
-  woody: '3',
-  sarge: '3.1',
-  etch: '4',
-  lenny: '5',
-  squeeze: '6',
-  wheezy: '7',
-  jessie: '8',
-  stretch: '9',
-  buster: '10',
-  bullseye: '11',
-  bookworm: '12',
-  trixie: '13',
-  forky: '14',
-  duke: '15',
-};
+const DEBIAN_VERSIONS = new Map([
+  ['buzz', '1.1'],
+  ['rex', '1.2'],
+  ['bo', '1.3'],
+  ['hamm', '2'],
+  ['slink', '2.1'],
+  ['potato', '2.2'],
+  ['woody', '3'],
+  ['sarge', '3.1'],
+  ['etch', '4'],
+  ['lenny', '5'],
+  ['squeeze', '6'],
+  ['wheezy', '7'],
+  ['jessie', '8'],
+  ['stretch', '9'],
+  ['buster', '10'],
+  ['bullseye', '11'],
+  ['bookworm', '12'],
+  ['trixie', '13'],
+  ['forky', '14'],
+  ['duke', '15'],
+]);
+const DEBIAN_RELEASES = new Set(DEBIAN_VERSIONS.values());
 
 /** OSV accepts leading zeros in exact numeric components for npm and crates.io. */
 function numericIdentifier(value: string): boolean {
@@ -203,10 +204,10 @@ export function resolvePackage(input: PackageIdentifier): ResolvedPackage {
     name = mavenName(`${parsed.namespace ?? ''}:${name}`);
   }
   if (parsed.type === 'golang' && parsed.subpath) name += `/${parsed.subpath}`;
+  const distro = parsed.qualifiers?.distro;
   if (ecosystem === 'Alpine') {
-    const distro = parsed.qualifiers?.distro ?? '';
-    const branch = /^v?([0-9]+\.[0-9]+)(?:\.[0-9]+)?$/.exec(distro);
-    if (!branch || branch[0].length !== distro.length) alpineReleaseRequired();
+    const branch = /^(?:alpine-)?v?([0-9]+\.[0-9]+)(?:\.[0-9]+)?$/.exec(distro ?? '');
+    if (!branch || branch[0] !== distro) alpineReleaseRequired();
     return {
       name,
       ecosystem: `Alpine:v${branch[1]}`,
@@ -214,14 +215,33 @@ export function resolvePackage(input: PackageIdentifier): ResolvedPackage {
       purl: input.purl,
     };
   }
+  if (ecosystem === 'Ubuntu' && distro) {
+    const release = /^(?:ubuntu-)?([0-9]{2}\.[0-9]{2})(?:\.[0-9]+)?$/.exec(distro);
+    if (release && release[0] === distro) {
+      return { name, ecosystem: `Ubuntu:${release[1]}`, version, purl: input.purl };
+    }
+  }
   if (ecosystem === 'Packagist' && parsed.qualifiers?.repository_url)
     ecosystem += `:${parsed.qualifiers.repository_url}`;
-  if (ecosystem === 'Debian' && parsed.qualifiers?.distro) {
-    const distro = parsed.qualifiers.distro.toLowerCase();
-    ecosystem += `:${Object.hasOwn(DEBIAN_VERSIONS, distro) ? DEBIAN_VERSIONS[distro] : distro}`;
+  let wirePurl = input.purl;
+  if (ecosystem === 'Debian' && distro) {
+    const folded = distro.toLowerCase();
+    const prefixed = folded.startsWith('debian-');
+    const release = prefixed ? folded.slice('debian-'.length) : folded;
+    const canonical = DEBIAN_VERSIONS.get(release) ?? release;
+    if (!DEBIAN_RELEASES.has(canonical)) {
+      throw validationError(
+        'Provide a Debian major release or codename, such as debian-12 or bookworm, or use a release-qualified tuple such as Debian:12.',
+        { reason: 'invalid_debian_distro' },
+      );
+    }
+    ecosystem += `:${canonical}`;
+    if (prefixed) {
+      parsed.qualifiers = { ...parsed.qualifiers, distro: canonical };
+      wirePurl = parsed.toString();
+    }
   }
   const normalizedVersion = exactVersion(version, ecosystem);
-  let wirePurl = input.purl;
   if (parsed.version && normalizedVersion !== version) {
     parsed.version = normalizedVersion;
     wirePurl = parsed.toString();

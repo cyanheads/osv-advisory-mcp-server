@@ -17,7 +17,9 @@ Take advisory IDs from `osv_query_package`, `osv_query_batch`, or `osv_query_com
 
 Page paths and revisions come from the response being retrieved. Batch row indexes refer to the original input order, including failed rows.
 
-Take Alpine's release branch from the audited system or SBOM, not the package version: `Alpine:v3.17` and the PURL qualifier `distro=3.17.3` select the same branch. Maven coordinates need both group ID and artifact ID; an artifact name alone is ambiguous. Composer PURLs use the Packagist vendor/package identity. Preserve an explicit repository URL when the lockfile supplies it; a repository-scoped empty result does not establish that the public registry package is clean.
+Take the release from the audited system or SBOM. `Alpine:v3.17` and `distro=alpine-3.17.3` select the same branch. Debian PURLs can use a known release or codename such as `debian-12` or `bookworm`. Use a numeric Ubuntu PURL qualifier such as `ubuntu-22.04` to select `Ubuntu:22.04`.
+
+Maven coordinates need both group ID and artifact ID. Composer PURLs use the Packagist vendor/package identity. Preserve an explicit repository URL when the lockfile supplies it. A repository-scoped empty result does not establish that the public registry package is clean.
 
 ## Gates
 
