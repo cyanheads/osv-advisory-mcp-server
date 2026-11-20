@@ -95,12 +95,11 @@ describe('osvQueryBatch', () => {
 
   it('keeps Ubuntu source queries and excludes unresolved empty rows from clean results', async () => {
     const packages = [
-      { purl: 'pkg:deb/ubuntu/libssl3@3.0.2-0ubuntu1?distro=jammy' },
+      { name: 'libssl3', ecosystem: 'Ubuntu:22.04:LTS', version: '3.0.2-0ubuntu1' },
       { name: 'linux-libc-dev', ecosystem: 'Ubuntu:20.04:LTS', version: '1.0.0' },
     ];
     const unresolved = {
       ...makeResult('libssl3', 'Ubuntu:22.04:LTS', '3.0.2-0ubuntu1'),
-      purl: packages[0]!.purl,
       sourceNames: ['libssl3'],
       sourceResolutionUnavailable: true,
     };
@@ -116,6 +115,7 @@ describe('osvQueryBatch', () => {
     });
     const text = contentText(reply);
     expect(text).toContain('Ubuntu source resolution unavailable');
+    expect(text).toContain('`libssl3` @ `3.0.2-0ubuntu1` (Ubuntu:22.04:LTS)');
     expect(text).toContain('sourceResolutionUnavailableRowRanges: 0');
     expect(text).not.toContain('package(s) clean — no known vulnerabilities');
     expect(text).toContain('linux-riscv');

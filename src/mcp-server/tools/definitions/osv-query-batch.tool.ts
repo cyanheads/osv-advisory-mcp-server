@@ -329,10 +329,13 @@ function renderBatch(result: z.infer<typeof BatchOutput>): Array<{ type: 'text';
   result.results.forEach((row, index) => {
     if (row.sourceNames !== undefined)
       lines.push(`Row ${index} queried Ubuntu names: ${row.sourceNames.map(esc).join(', ')}`);
-    if (row.sourceResolutionUnavailable)
+    if (row.sourceResolutionUnavailable) {
+      const outcome =
+        !row.vulnerable && row.error === null && !row.truncated ? ' No findings.' : '';
       lines.push(
-        `Row ${index}: Ubuntu source resolution unavailable. An empty result is inconclusive.`,
+        `Row ${index}: ${callerCode(row.name)} @ ${callerCode(row.version)} (${escapeMarkdownInline(row.ecosystem)}) — Ubuntu source resolution unavailable.${outcome} An empty result is inconclusive.`,
       );
+    }
     if (row.nextCursor !== undefined)
       lines.push(`Row ${index} → osv_query_package: ${cursorBlock(row.nextCursor).text}`);
   });

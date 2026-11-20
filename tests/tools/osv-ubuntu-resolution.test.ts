@@ -241,9 +241,12 @@ it('reports malformed mapping fallbacks as inconclusive on both tools', async ()
   expect(contentText(single)).not.toContain('No known vulnerabilities');
   const batch = await runToolContract(osvQueryBatch, { packages: [binary] });
   expect(batch.structuredContent).toMatchObject({
-    results: [{ name: binary.name, sourceResolutionUnavailable: true }],
+    results: [{ ...binary, sourceResolutionUnavailable: true, vulnCount: 0 }],
     summary: { cleanCount: 0 },
   });
+  expect(contentText(batch)).toContain(
+    `\`${binary.name}\` @ \`${binary.version}\` (${binary.ecosystem}) — Ubuntu source resolution unavailable. No findings.`,
+  );
   expect(contentText(batch)).toMatch(/resolution (?:was )?unavailable/i);
   expect(contentText(batch)).not.toContain('— clean');
   expect(fetch).toHaveBeenCalledTimes(4);
