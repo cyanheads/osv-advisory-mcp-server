@@ -48,6 +48,14 @@ import {
 
 const OSV_BASE_URL = 'https://api.osv.dev';
 
+function decodePackageContinuation(pkg: ResolvedPackage, cursor: string): PackageContinuation {
+  const legacyUbuntuBody =
+    pkg.purl !== undefined && pkg.wirePurl === undefined && ubuntuMappingRelease(pkg.ecosystem)
+      ? packageBody({ ...pkg, wirePurl: pkg.purl })
+      : undefined;
+  return decodePackageCursor(packageBody(pkg), cursor, legacyUbuntuBody);
+}
+
 /** Recovery for a package query whose ecosystem OSV does not recognize. */
 export const INVALID_ECOSYSTEM_RECOVERY =
   'Call osv_list_ecosystems to see valid ecosystem strings, then retry with the correct value.';
@@ -477,7 +485,7 @@ export class OsvApiService {
   > {
     const pkg = identifier ?? { name, ecosystem, version };
     const body = packageBody(pkg);
-    const continuation = cursor === undefined ? undefined : decodePackageCursor(body, cursor);
+    const continuation = cursor === undefined ? undefined : decodePackageContinuation(pkg, cursor);
     if (ubuntuMappingRelease(ecosystem) && continuation?.version !== 1) {
       return this.queryUbuntuPackage(pkg, ctx, continuation);
     }
@@ -691,7 +699,7 @@ export class OsvApiService {
     cursor?: string,
   ): Promise<{ advisory: OsvPackageVulnerability | null } & Partial<UbuntuSourceResolution>> {
     const continuation =
-      cursor === undefined ? undefined : decodePackageCursor(packageBody(query), cursor);
+      cursor === undefined ? undefined : decodePackageContinuation(query, cursor);
     const deadline = startQueryDeadline(ctx);
     try {
       const resolution =

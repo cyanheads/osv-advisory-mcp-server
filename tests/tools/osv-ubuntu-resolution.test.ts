@@ -42,6 +42,30 @@ it('resumes an existing Ubuntu source cursor using its original query body', asy
   expect(JSON.parse(fetch.mock.calls[0]?.[1].body)).toEqual({ ...body, page_token: 'next' });
 });
 
+it.each([
+  { purl: 'pkg:deb/ubuntu/linux@5.15.0-25.25?distro=ubuntu-22.04' },
+  { purl: 'pkg:deb/ubuntu/linux?distro=ubuntu-22.04', version: '5.15.0-25.25' },
+])('gives restart guidance for a v0.5.1 Ubuntu PURL cursor ($purl)', async (input) => {
+  initOsvApiService();
+  const fetch = vi.fn();
+  vi.stubGlobal('fetch', fetch);
+  const oldBody = {
+    package: { purl: input.purl },
+    ...(input.version === undefined ? {} : { version: input.version }),
+  };
+  const cursor = encodeQueryCursor(oldBody, 'old-page');
+  for (const page of [undefined, { advisoryId: 'UBUNTU-test', path: '/fixedVersions' }]) {
+    const response = await runToolContract(osvQueryPackage, { ...input, cursor, page });
+    const hint =
+      'Omit cursor and repeat the original Ubuntu PURL query to start over with the requested release.';
+    expect(response.structuredContent).toMatchObject({
+      error: { data: { reason: 'invalid_cursor', recovery: { hint } } },
+    });
+    expect(contentText(response)).toContain(hint);
+  }
+  expect(fetch).not.toHaveBeenCalled();
+});
+
 it('queries the mapped source while echoing the original package on both output surfaces', async () => {
   initOsvApiService();
   const fetch = vi

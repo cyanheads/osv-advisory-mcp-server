@@ -21,6 +21,8 @@ Take the release from the audited system or SBOM. `Alpine:v3.17` and `distro=alp
 
 For Ubuntu binaries, pass the installed name, version, and release, including its Pro or LTS scope. OSV indexes advisories by source package. A binary can map to several sources on one release and a single source on another. If source resolution is unavailable, record the audit as incomplete even when the supplied name returns no findings. In a batch, `summary.sourceResolutionUnavailableRowRanges` identifies the rows to retry by their original indices.
 
+If an Ubuntu PURL cursor predates release-scoped lookup, omit it and repeat the original PURL query to start over within the requested release.
+
 Maven coordinates need both group ID and artifact ID. Composer PURLs use the Packagist vendor/package identity. Preserve an explicit repository URL when the lockfile supplies it. A repository-scoped empty result does not establish that the public registry package is clean.
 
 ## Gates

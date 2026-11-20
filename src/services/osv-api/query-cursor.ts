@@ -73,7 +73,11 @@ export function encodeSourceCursor(
 }
 
 /** Decode either a previously issued package cursor or a mapped source cursor. */
-export function decodePackageCursor(body: object, cursor: string): PackageContinuation {
+export function decodePackageCursor(
+  body: object,
+  cursor: string,
+  legacyUbuntuBody?: object,
+): PackageContinuation {
   const bytes = Buffer.from(cursor, 'base64url');
   if (bytes.toString('base64url') !== cursor) throw invalidCursor();
   let value: unknown;
@@ -83,7 +87,22 @@ export function decodePackageCursor(body: object, cursor: string): PackageContin
     throw invalidCursor();
   }
   const parsed = z.discriminatedUnion('version', [CursorEnvelope, SourceEnvelope]).safeParse(value);
-  if (!parsed.success || parsed.data.query !== queryIdentity(body)) throw invalidCursor();
+  if (!parsed.success) throw invalidCursor();
+  if (parsed.data.query !== queryIdentity(body)) {
+    if (
+      parsed.data.version === 1 &&
+      legacyUbuntuBody !== undefined &&
+      parsed.data.query === queryIdentity(legacyUbuntuBody)
+    ) {
+      throw validationError('This Ubuntu PURL cursor predates release-scoped lookup.', {
+        reason: 'invalid_cursor',
+        recovery: {
+          hint: 'Omit cursor and repeat the original Ubuntu PURL query to start over with the requested release.',
+        },
+      });
+    }
+    throw invalidCursor();
+  }
   if (parsed.data.version === 2) {
     const names = new Set(parsed.data.sources.map(({ name }) => name));
     if (

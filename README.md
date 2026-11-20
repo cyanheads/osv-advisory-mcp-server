@@ -52,6 +52,7 @@ Vulnerability data from OSV.dev, the open-source vulnerability database. Query a
 - Unsupported ecosystem-specific constraints fail as `invalid_version`; npm/crates.io exact pins with `=` or `==` normalize to the installed version
 - Each advisory carries CVE `aliases`, optional `upstream` IDs, `severityLabel` with its `severitySource`, the queried package's `fixedVersions`, `affectedRanges`, and `cweIds`
 - `truncated: true` indicates more OSV pages remain. Pass `nextCursor` as `cursor` with the same identifier to continue. Repeat that input cursor alongside `page` when retrieving fields from a resumed reply. An empty initial result confirms no known vulnerabilities when lookup and source resolution completed. An empty terminal resume only confirms exhaustion of the continuation
+- When upgrading from before 0.6.0, restart any Ubuntu PURL query with a numeric distro qualifier by omitting its old cursor. The new query scopes findings to the requested release
 
 ---
 

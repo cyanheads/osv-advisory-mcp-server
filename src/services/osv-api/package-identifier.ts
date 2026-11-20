@@ -218,7 +218,13 @@ export function resolvePackage(input: PackageIdentifier): ResolvedPackage {
   if (ecosystem === 'Ubuntu' && distro) {
     const release = /^(?:ubuntu-)?([0-9]{2}\.[0-9]{2})(?:\.[0-9]+)?$/.exec(distro);
     if (release && release[0] === distro) {
-      return { name, ecosystem: `Ubuntu:${release[1]}`, version, purl: input.purl };
+      return {
+        name,
+        ecosystem: `Ubuntu:${release[1]}`,
+        version,
+        purl: input.purl,
+        embeddedVersion: parsed.version !== undefined,
+      };
     }
   }
   if (ecosystem === 'Packagist' && parsed.qualifiers?.repository_url)
