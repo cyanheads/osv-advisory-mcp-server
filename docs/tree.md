@@ -1,6 +1,6 @@
 # osv-advisory-mcp-server - Directory Structure
 
-Generated on: 2026-11-14 06:12:25
+Generated on: 2026-11-20 22:43:34
 
 ```text
 osv-advisory-mcp-server/
@@ -29,6 +29,7 @@ osv-advisory-mcp-server/
 │   ├── 0.3.x/
 │   ├── 0.4.x/
 │   ├── 0.5.x/
+│   ├── 0.6.x/
 │   └── template.md
 ├── docs/
 │   ├── design.md
@@ -173,7 +174,8 @@ osv-advisory-mcp-server/
 │   │       ├── package-identifier.ts
 │   │       ├── query-cursor.ts
 │   │       ├── severity.ts
-│   │       └── types.ts
+│   │       ├── types.ts
+│   │       └── ubuntu-source-resolution.ts
 │   └── index.ts
 ├── tests/
 │   ├── config/
@@ -225,6 +227,7 @@ osv-advisory-mcp-server/
 │       ├── osv-query-batch.tool.test.ts
 │       ├── osv-query-commit.tool.test.ts
 │       ├── osv-query-package.tool.test.ts
+│       ├── osv-ubuntu-resolution.test.ts
 │       ├── purl-query.test.ts
 │       ├── query-guidance.test.ts
 │       ├── render-escape.test.ts

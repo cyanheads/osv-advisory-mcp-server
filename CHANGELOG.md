@@ -2,9 +2,9 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
-## [0.5.2](changelog/0.5.x/0.5.2.md) — 2026-11-20
+## [0.6.0](changelog/0.6.x/0.6.0.md) — 2026-11-20 · ⚠️ Breaking
 
-Resolve distro-qualified package URLs in dependency audits
+Resolve Ubuntu binary packages before dependency audits
 
 ## [0.5.1](changelog/0.5.x/0.5.1.md) — 2026-11-13
 
